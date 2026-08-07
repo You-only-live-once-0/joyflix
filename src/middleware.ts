@@ -120,6 +120,6 @@ function shouldSkipAuth(pathname: string): boolean {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|login|warning|api/login|api/logout|api/cron|api/server-config|api/recommendations).*))',
+    '/((?!_next/static|_next/image|favicon.ico|login|warning|api/login|api/logout|api/cron|api/image-proxy|api/server-config|api/recommendations).*))',
   ],
 };

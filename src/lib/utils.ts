@@ -12,13 +12,14 @@ function getDoubanImageProxyConfig(): {
     | 'custom';
   proxyUrl: string;
 } {
+  const runtimeConfig = (window as any).RUNTIME_CONFIG;
   const doubanImageProxyType =
+    runtimeConfig?.DOUBAN_IMAGE_PROXY_TYPE ||
     localStorage.getItem('doubanImageProxyType') ||
-    (window as any).RUNTIME_CONFIG?.DOUBAN_IMAGE_PROXY_TYPE ||
-    'direct';
+    'server';
   const doubanImageProxy =
+    runtimeConfig?.DOUBAN_IMAGE_PROXY ||
     localStorage.getItem('doubanImageProxyUrl') ||
-    (window as any).RUNTIME_CONFIG?.DOUBAN_IMAGE_PROXY ||
     '';
   return {
     proxyType: doubanImageProxyType,

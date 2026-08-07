@@ -396,6 +396,46 @@ class HybridCacheManager {
 // 获取缓存管理器实例
 const cacheManager = HybridCacheManager.getInstance();
 
+let favoritesFetchPromise: Promise<Record<string, Favorite>> | null = null;
+let lastFavoritesFetchAt = 0;
+const FAVORITES_SYNC_INTERVAL = 60_000;
+
+function fetchFavoritesShared(): Promise<Record<string, Favorite>> {
+  if (!favoritesFetchPromise) {
+    lastFavoritesFetchAt = Date.now();
+    favoritesFetchPromise = fetchFromApi<Record<string, Favorite>>(
+      '/api/favorites'
+    )
+      .then((freshData) => {
+        cacheManager.cacheFavorites(freshData);
+        return freshData;
+      })
+      .finally(() => {
+        favoritesFetchPromise = null;
+      });
+  }
+
+  return favoritesFetchPromise;
+}
+
+function syncFavoritesInBackground(
+  cachedFavorites: Record<string, Favorite>
+): void {
+  if (Date.now() - lastFavoritesFetchAt < FAVORITES_SYNC_INTERVAL) return;
+
+  void fetchFavoritesShared()
+    .then((freshData) => {
+      if (JSON.stringify(cachedFavorites) !== JSON.stringify(freshData)) {
+        window.dispatchEvent(
+          new CustomEvent('favoritesUpdated', { detail: freshData })
+        );
+      }
+    })
+    .catch((err) => {
+      console.warn('后台同步收藏失败:', err);
+    });
+}
+
 // ---- 错误处理辅助函数 ----
 /**
  * 数据库操作失败时的通用错误处理
@@ -1168,33 +1208,12 @@ export async function isFavorited(
     const cachedFavorites = cacheManager.getCachedFavorites();
 
     if (cachedFavorites) {
-      // 返回缓存数据，同时后台异步更新
-      fetchFromApi<Record<string, Favorite>>(`/api/favorites`)
-        .then((freshData) => {
-          // 只有数据真正不同时才更新缓存
-          if (JSON.stringify(cachedFavorites) !== JSON.stringify(freshData)) {
-            cacheManager.cacheFavorites(freshData);
-            // 触发数据更新事件
-            window.dispatchEvent(
-              new CustomEvent('favoritesUpdated', {
-                detail: freshData,
-              })
-            );
-          }
-        })
-        .catch((err) => {
-          console.warn('后台同步收藏失败:', err);
-          triggerGlobalError('后台同步收藏失败');
-        });
-
+      syncFavoritesInBackground(cachedFavorites);
       return !!cachedFavorites[key];
     } else {
       // 缓存为空，直接从 API 获取并缓存
       try {
-        const freshData = await fetchFromApi<Record<string, Favorite>>(
-          `/api/favorites`
-        );
-        cacheManager.cacheFavorites(freshData);
+        const freshData = await fetchFavoritesShared();
         return !!freshData[key];
       } catch (err) {
         console.error('检查收藏状态失败:', err);
