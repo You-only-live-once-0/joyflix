@@ -3,9 +3,15 @@
 const webpack = require('webpack');
 
 const resolvedUpstashUrl =
-  process.env.UPSTASH_URL || process.env.UPSTASH_REDIS_REST_URL || '';
+  process.env.UPSTASH_URL ||
+  process.env.UPSTASH_REDIS_REST_URL ||
+  process.env.KV_REST_API_URL ||
+  '';
 const resolvedUpstashToken =
-  process.env.UPSTASH_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '';
+  process.env.UPSTASH_TOKEN ||
+  process.env.UPSTASH_REDIS_REST_TOKEN ||
+  process.env.KV_REST_API_TOKEN ||
+  '';
 const detectedStorageType =
   process.env.NEXT_PUBLIC_STORAGE_TYPE ||
   (resolvedUpstashUrl && resolvedUpstashToken ? 'upstash' : 'localstorage');
