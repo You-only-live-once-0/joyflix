@@ -314,8 +314,10 @@ function commonsPageToResult(
 ): SearchResult | null {
   const title = page.title || '';
   const info = page.imageinfo?.[0];
-  const mediaUrl = info?.url || '';
-  const mime = info?.mime || '';
+  if (!info) return null;
+
+  const mediaUrl = info.url || '';
+  const mime = info.mime || '';
 
   if (
     !title ||
@@ -335,7 +337,7 @@ function commonsPageToResult(
   return {
     id: encodeOpaqueId('wc', title),
     title: normalizeTitle(title),
-    poster: info?.thumburl || '/assets/img/poster.png',
+    poster: info.thumburl || '/assets/img/poster.png',
     episodes: [mediaUrl],
     episodes_titles: ['正片'],
     source: apiSite.key,
