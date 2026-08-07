@@ -7,7 +7,7 @@ import { searchAndFindFromApi } from '@/lib/downstream-stream';
 import { SearchResult } from '@/lib/types';
 
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);

@@ -82,6 +82,8 @@ async function fetchJson<T>(
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
+        'User-Agent':
+          'JoyFlix/1.0 (+https://github.com/You-only-live-once-0/joyflix)',
       },
       next: { revalidate: 3600 },
     });
@@ -383,7 +385,7 @@ async function searchWikimediaCommons(
     apiSite,
     new URLSearchParams({
       generator: 'search',
-      gsrsearch: term,
+      gsrsearch: `filetype:video ${term}`,
       gsrnamespace: '6',
       gsrlimit: '24',
     })
