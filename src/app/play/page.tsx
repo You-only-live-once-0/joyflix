@@ -2205,8 +2205,8 @@ function PlayPageClient() {
 
       // 监听视频可播放事件，这时恢复播放进度更可靠
       artPlayerRef.current.on('video:canplay', () => {
-        // 成功恢复可播放后清掉短时卡顿计数；保留失败源列表，避免来回横跳。
-        playbackHealthRef.current.stalls = 0;
+        // 不在短暂恢复时立即清空卡顿计数。卡顿计数会在 45 秒稳定窗口后自动衰减，
+        // 这样连续反复缓冲可以可靠触发备用源切换。
 
         // 若存在需要恢复的播放进度，则跳转
         if (resumeTimeRef.current && resumeTimeRef.current > 0) {
