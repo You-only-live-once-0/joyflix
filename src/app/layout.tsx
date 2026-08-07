@@ -13,14 +13,9 @@ import { GlobalErrorIndicator } from '../components/GlobalErrorIndicator';
 import { SiteProvider } from '../components/SiteProvider';
 import { ThemeProvider } from '../components/ThemeProvider';
 import ThemeStatusBar from '../components/ThemeStatusBar';
-import { headers } from 'next/headers'; // 导入 headers
 
 const inter = Inter({ subsets: ['latin'] });
 
-// 辅助函数，用于检测 Android 用户代理
-function isAndroid(userAgent: string): boolean {
-  return /Android/i.test(userAgent);
-}
 
 // 动态生成 metadata，支持配置更新后的标题变化
 export async function generateMetadata(): Promise<Metadata> {
@@ -46,10 +41,6 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const headersList = headers();
-  const userAgent = headersList.get('user-agent') || '';
-  const isAndroidDevice = isAndroid(userAgent);
-
   let siteName = process.env.NEXT_PUBLIC_SITE_NAME || 'JoyFlix';
   let announcement =
     process.env.ANNOUNCEMENT || '切勿分享本站，以维持使用体验哦 ʕ •ᴥ•ʔ～✰✰';
