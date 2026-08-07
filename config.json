@@ -123,6 +123,26 @@
     "wikimedia_commons": {
       "api": "adapter:wikimedia-commons",
       "name": "Wikimedia Commons 开放视频"
+    },
+    "ia_classic_tv": {
+      "api": "adapter:internet-archive?collection=classic_tv",
+      "name": "Internet Archive 经典电视"
+    },
+    "ia_animation": {
+      "api": "adapter:internet-archive?collection=animationandcartoons",
+      "name": "Internet Archive 动画与卡通"
+    },
+    "ia_silent_films": {
+      "api": "adapter:internet-archive?collection=silent_films",
+      "name": "Internet Archive 默片馆"
+    },
+    "ia_open_movies": {
+      "api": "adapter:internet-archive?collection=opensource_movies",
+      "name": "Internet Archive 开放电影"
+    },
+    "ia_movies_films": {
+      "api": "adapter:internet-archive?collection=moviesandfilms",
+      "name": "Internet Archive 电影与影像"
     }
   },
   "custom_category": [
