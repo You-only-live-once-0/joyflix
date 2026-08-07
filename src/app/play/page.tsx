@@ -205,6 +205,14 @@ function PlayPageClient() {
   const artPlayerRef = useRef<any>(null);
   const artRef = useRef<HTMLDivElement | null>(null);
 
+  // 播放健康状态：用于卡顿时先降码率，连续异常时自动切换备用源。
+  const playbackHealthRef = useRef({
+    stalls: 0,
+    lastStallAt: 0,
+    lastFailoverAt: 0,
+    failedSources: new Set<string>(),
+  });
+
   // Wake Lock 相关
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
@@ -262,10 +270,13 @@ function PlayPageClient() {
           console.warn(`播放源 ${source.source_name} 没有可用的播放地址`);
           return null;
         }
-        const episodeUrl =
-          source.episodes.length > 1
-            ? source.episodes[1] // 如果可能，使用靠后的集数进行测试
-            : source.episodes[0];
+        // 电视剧不同集可能落到不同 CDN 节点，优先测试用户当前正在看的集数
+        // 而不是固定测试第 2 集，避免“测速很快、实际这一集很卡”。
+        const targetEpisodeIndex = Math.min(
+          currentEpisodeIndexRef.current,
+          source.episodes.length - 1
+        );
+        const episodeUrl = source.episodes[targetEpisodeIndex] || source.episodes[0];
         const testResult = await getVideoResolutionFromM3u8(episodeUrl);
         return { source, testResult };
       } catch (error) {
@@ -357,7 +368,7 @@ function PlayPageClient() {
   ): number => {
     let score = 0;
 
-    // --- 1. 分辨率评分 (权重: 30%) ---
+    // --- 1. 分辨率评分 (权重: 15%)：电视剧优先流畅，不盲目追高码率 ---
     let qualityScore = (() => {
       switch (testResult.quality) {
         case '4K': return 100;
@@ -391,9 +402,9 @@ function PlayPageClient() {
         qualityScore *= 0.3; // 仅获得30%的画质分
         console.log(`  - ${testResult.quality}速度不足(${speedKBps.toFixed(0)}KB/s < ${required}KB/s)，画质分被惩罚.`);
     }
-    score += qualityScore * 0.30;
+    score += qualityScore * 0.15;
 
-    // --- 2. 下载速度评分 (权重: 40%) ---
+    // --- 2. 下载速度评分 (权重: 50%) ---
     const speedScore = (() => {
       if (speedKBps === 0) return 30; // 未知速度给一个基础分
       // S型曲线评分，在达到2.5MB/s后增长放缓
@@ -401,7 +412,7 @@ function PlayPageClient() {
       const x0 = 2500; // 2.5 MB/s
       return 100 / (1 + Math.exp(-k * (speedKBps - x0)));
     })();
-    score += speedScore * 0.40;
+    score += speedScore * 0.50;
 
     // --- 3. 网络延迟评分 (权重: 10%) ---
     const pingScore = (() => {
@@ -413,14 +424,14 @@ function PlayPageClient() {
     })();
     score += pingScore * 0.10;
 
-    // --- 4. 稳定性评分 (权重: 20%) ---
+    // --- 4. 稳定性评分 (权重: 25%) ---
     const jitterScore = (() => {
         if (testResult.speedJitter <= 0 || maxJitter <= 0) return 100; // 没有抖动或无法计算则为满分
         // 抖动越小越好，线性反向评分
         const jitterRatio = testResult.speedJitter / maxJitter;
         return 100 * (1 - Math.min(1, jitterRatio));
     })();
-    score += jitterScore * 0.20;
+    score += jitterScore * 0.25;
 
     // --- 惩罚机制: 平滑延迟惩罚 ---
     const pingPenalty = (() => {
@@ -1898,15 +1909,30 @@ function PlayPageClient() {
               video.hls.destroy();
             }
             const hls = new Hls({
-              debug: false, // 关闭日志
-              enableWorker: true, // WebWorker 解码，降低主线程压力
-              lowLatencyMode: true, // 开启低延迟 LL-HLS
+              debug: false,
+              enableWorker: true,
 
-              /* 缓冲/内存相关 - 极致流畅版 */
-              maxBufferLength: 80, // 前向缓冲最大 80s，过大容易导致高延迟
-              maxMaxBufferLength: 200, // 设置一个安全的最大上限，防止意外的缓冲裁剪
-              backBufferLength: 40, // 仅保留 40s 已播放内容，避免内存占用
-              maxBufferSize: 500 * 1000 * 1000, // 约 500MB，超出后触发清理
+              // 当前页面播放的是点播电视剧，不需要 LL-HLS 的直播低延迟策略。
+              // VOD 关闭低延迟后，ABR 可以更积极地建立安全缓冲区。
+              lowLatencyMode: false,
+
+              // 以“不断流”为第一目标。保持约 60 秒前向缓冲，同时限制内存。
+              maxBufferLength: 60,
+              maxMaxBufferLength: 120,
+              backBufferLength: 30,
+              maxBufferSize: 120 * 1000 * 1000,
+              maxBufferHole: 0.5,
+
+              // 自适应码率更保守：带宽稍有波动就优先选择更稳的档位。
+              abrBandWidthFactor: 0.75,
+              abrBandWidthUpFactor: 0.6,
+              maxStarvationDelay: 2,
+              maxLoadingDelay: 4,
+              capLevelToPlayerSize: true,
+              capLevelOnFPSDrop: true,
+              startFragPrefetch: true,
+              nudgeMaxRetry: 5,
+              highBufferWatchdogPeriod: 1,
 
               /* 自定义loader */
               loader: blockAdEnabledRef.current
@@ -1923,6 +1949,64 @@ function PlayPageClient() {
 
             hls.on(Hls.Events.ERROR, function (event: any, data: any) {
               console.error('HLS Error:', event, data);
+
+              const health = playbackHealthRef.current;
+              const now = Date.now();
+              const isPlaybackStall =
+                data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||
+                data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT ||
+                data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR;
+
+              if (isPlaybackStall) {
+                // 超过 45 秒没有新卡顿则重新计数，避免偶发网络抖动触发换源。
+                if (now - health.lastStallAt > 45000) health.stalls = 0;
+                health.lastStallAt = now;
+                health.stalls += 1;
+
+                // 第一次/第二次卡顿先主动降一级，优先恢复连续播放。
+                if (health.stalls <= 2 && hls.levels?.length > 1) {
+                  const currentLevel =
+                    hls.currentLevel >= 0 ? hls.currentLevel : hls.nextAutoLevel;
+                  if (currentLevel > 0) {
+                    hls.nextLevel = currentLevel - 1;
+                    hls.autoLevelCapping = currentLevel - 1;
+                    console.log('检测到卡顿，自动降低一档清晰度');
+                  }
+                }
+
+                // 同一时间窗口连续卡顿 3 次以上，且存在备用路线时自动换源。
+                if (
+                  health.stalls >= 3 &&
+                  now - health.lastFailoverAt > 60000 &&
+                  availableSources.length > 1
+                ) {
+                  const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;
+                  health.failedSources.add(currentKey);
+                  const episodeIndex = currentEpisodeIndexRef.current;
+                  const candidate = availableSources.find((source) => {
+                    const key = `${source.source}-${source.id}`;
+                    return (
+                      key !== currentKey &&
+                      !health.failedSources.has(key) &&
+                      Boolean(source.episodes?.[episodeIndex])
+                    );
+                  });
+
+                  if (candidate) {
+                    health.lastFailoverAt = now;
+                    health.stalls = 0;
+                    resumeTimeRef.current = artPlayerRef.current?.currentTime || 0;
+                    console.log(`连续卡顿，自动切换到备用源: ${candidate.source_name}`);
+                    void handleSourceChange(
+                      candidate.source,
+                      candidate.id,
+                      candidate.title
+                    );
+                    return;
+                  }
+                }
+              }
+
               if (data.fatal) {
                 switch (data.type) {
                   case Hls.ErrorTypes.NETWORK_ERROR:
@@ -2121,6 +2205,9 @@ function PlayPageClient() {
 
       // 监听视频可播放事件，这时恢复播放进度更可靠
       artPlayerRef.current.on('video:canplay', () => {
+        // 成功恢复可播放后清掉短时卡顿计数；保留失败源列表，避免来回横跳。
+        playbackHealthRef.current.stalls = 0;
+
         // 若存在需要恢复的播放进度，则跳转
         if (resumeTimeRef.current && resumeTimeRef.current > 0) {
           try {
