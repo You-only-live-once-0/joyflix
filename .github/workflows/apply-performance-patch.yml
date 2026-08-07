@@ -1,0 +1,29 @@
+name: Apply performance patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-performance-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply patch
+        run: node scripts/apply-performance-patch.mjs
+      - name: Commit optimized code
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "perf: optimize images and deduplicate sync requests"
+          git push
