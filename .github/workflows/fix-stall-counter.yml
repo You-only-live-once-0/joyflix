@@ -1,0 +1,37 @@
+name: Finalize stall recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-stall-counter.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Keep stall history across short recoveries
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/app/play/page.tsx')
+          s = p.read_text()
+          old = """      artPlayerRef.current.on('video:canplay', () => {\n        // 成功恢复可播放后清掉短时卡顿计数；保留失败源列表，避免来回横跳。\n        playbackHealthRef.current.stalls = 0;\n\n        // 若存在需要恢复的播放进度，则跳转\n"""
+          new = """      artPlayerRef.current.on('video:canplay', () => {\n        // 不在短暂恢复时立即清空卡顿计数。卡顿计数会在 45 秒稳定窗口后自动衰减，\n        // 这样连续反复缓冲可以可靠触发备用源切换。\n\n        // 若存在需要恢复的播放进度，则跳转\n"""
+          assert old in s, 'canplay stall reset block not found'
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm -f .github/workflows/fix-stall-counter.yml
+      - name: Commit final recovery logic
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/app/play/page.tsx .github/workflows/fix-stall-counter.yml
+          git commit -m 'fix: preserve repeated stall detection'
+          git push origin HEAD:main
