@@ -1,7 +1,21 @@
 /** @type {import('next').NextConfig} */
 /* eslint-disable @typescript-eslint/no-var-requires */
+const webpack = require('webpack');
+
+const resolvedUpstashUrl =
+  process.env.UPSTASH_URL || process.env.UPSTASH_REDIS_REST_URL || '';
+const resolvedUpstashToken =
+  process.env.UPSTASH_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const detectedStorageType =
+  process.env.NEXT_PUBLIC_STORAGE_TYPE ||
+  (resolvedUpstashUrl && resolvedUpstashToken ? 'upstash' : 'localstorage');
+
 const nextConfig = {
   output: 'standalone',
+  env: {
+    NEXT_PUBLIC_STORAGE_TYPE: detectedStorageType,
+    USERNAME: process.env.USERNAME || 'admin',
+  },
   eslint: {
     dirs: ['src'],
   },
@@ -9,7 +23,6 @@ const nextConfig = {
   reactStrictMode: false,
   swcMinify: true,
 
-  // Uncoment to add domain whitelist
   images: {
     unoptimized: true,
     remotePatterns: [
@@ -24,24 +37,21 @@ const nextConfig = {
     ],
   },
 
-  webpack(config) {
-    // Grab the existing rule that handles SVG imports
+  webpack(config, { isServer, nextRuntime }) {
     const fileLoaderRule = config.module.rules.find((rule) =>
       rule.test?.test?.('.svg')
     );
 
     config.module.rules.push(
-      // Reapply the existing rule, but only for svg imports ending in ?url
       {
         ...fileLoaderRule,
         test: /\.svg$/i,
-        resourceQuery: /url/, // *.svg?url
+        resourceQuery: /url/,
       },
-      // Convert all other *.svg imports to React components
       {
         test: /\.svg$/i,
         issuer: { not: /\.(css|scss|sass)$/ },
-        resourceQuery: { not: /url/ }, // exclude if *.svg?url
+        resourceQuery: { not: /url/ },
         loader: '@svgr/webpack',
         options: {
           dimensions: false,
@@ -50,7 +60,6 @@ const nextConfig = {
       }
     );
 
-    // Modify the file loader rule to ignore *.svg, since we have it handled now.
     fileLoaderRule.exclude = /\.svg$/i;
 
     config.resolve.fallback = {
@@ -59,6 +68,15 @@ const nextConfig = {
       tls: false,
       crypto: false,
     };
+
+    if ((isServer || nextRuntime) && resolvedUpstashUrl && resolvedUpstashToken) {
+      config.plugins.push(
+        new webpack.DefinePlugin({
+          'process.env.UPSTASH_URL': JSON.stringify(resolvedUpstashUrl),
+          'process.env.UPSTASH_TOKEN': JSON.stringify(resolvedUpstashToken),
+        })
+      );
+    }
 
     return config;
   },
