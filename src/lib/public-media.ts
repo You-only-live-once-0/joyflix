@@ -82,7 +82,6 @@ async function fetchJson<T>(
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'JoyFlix/1.0 public-media-adapter',
       },
       next: { revalidate: 3600 },
     });
