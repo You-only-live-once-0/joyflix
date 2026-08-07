@@ -64,10 +64,16 @@ function parseAdapter(api: string): {
 }
 
 export function isPublicMediaAdapter(api: string): boolean {
-  return api.startsWith('adapter:internet-archive') || api.startsWith('adapter:wikimedia-commons');
+  return (
+    api.startsWith('adapter:internet-archive') ||
+    api.startsWith('adapter:wikimedia-commons')
+  );
 }
 
-async function fetchJson<T>(url: string, timeout = PUBLIC_MEDIA_TIMEOUT): Promise<T> {
+async function fetchJson<T>(
+  url: string,
+  timeout = PUBLIC_MEDIA_TIMEOUT
+): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -100,7 +106,10 @@ function toText(value: unknown): string {
 }
 
 function normalizeTitle(value: string): string {
-  return value.replace(/^File:/i, '').replace(/.(webm|ogv|ogg|mp4)$/i, '').trim();
+  return value
+    .replace(/^File:/i, '')
+    .replace(/\.(webm|ogv|ogg|mp4)$/i, '')
+    .trim();
 }
 
 function normalizeSearch(value: string): string {
@@ -109,8 +118,8 @@ function normalizeSearch(value: string): string {
 
 function safeSearchTerm(value: string): string {
   return value
-    .replace(/[^p{L}p{N}s._-]/gu, ' ')
-    .replace(/s+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s._-]/gu, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 120);
 }
@@ -122,8 +131,8 @@ function encodeOpaqueId(prefix: 'ia' | 'wc', value: string): string {
     binary += String.fromCharCode(byte);
   });
   return `${prefix}_${btoa(binary)
-    .replace(/+/g, '-')
-    .replace(///g, '_')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
     .replace(/=+$/g, '')}`;
 }
 
@@ -141,7 +150,9 @@ function decodeOpaqueId(id: string, expectedPrefix: 'ia' | 'wc'): string {
 }
 
 function getYear(value: unknown, fallback?: unknown): string {
-  const match = `${toText(value)} ${toText(fallback)}`.match(/(18|19|20)d{2}/);
+  const match = `${toText(value)} ${toText(fallback)}`.match(
+    /\b(18|19|20)\d{2}\b/
+  );
   return match?.[0] || 'unknown';
 }
 
@@ -150,7 +161,9 @@ function archiveDownloadUrl(identifier: string, fileName: string): string {
     .split('/')
     .map((part) => encodeURIComponent(part))
     .join('/');
-  return `https://archive.org/download/${encodeURIComponent(identifier)}/${encodedPath}`;
+  return `https://archive.org/download/${encodeURIComponent(
+    identifier
+  )}/${encodedPath}`;
 }
 
 function archiveFileScore(file: ArchiveFile): number {
@@ -174,18 +187,25 @@ function selectArchiveFiles(files: ArchiveFile[]): ArchiveFile[] {
   const playable = files.filter((file) => {
     const name = file.name || '';
     const lower = name.toLowerCase();
-    if (!/.(mp4|webm|ogv|ogg)$/i.test(name)) return false;
-    if (/(_thumb|thumbs?|sample|trailer|preview|spectrogram)/i.test(lower)) return false;
+    if (!/\.(mp4|webm|ogv|ogg)$/i.test(name)) return false;
+    if (/(_thumb|thumbs?|sample|trailer|preview|spectrogram)/i.test(lower)) {
+      return false;
+    }
     if (file.private === true || file.private === 'true') return false;
     return true;
   });
 
   const originals = playable.filter((file) => file.source === 'original');
   const candidates = originals.length > 0 ? originals : playable;
-  return candidates.sort((a, b) => archiveFileScore(b) - archiveFileScore(a)).slice(0, 12);
+  return candidates
+    .sort((a, b) => archiveFileScore(b) - archiveFileScore(a))
+    .slice(0, 12);
 }
 
-async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<SearchResult[]> {
+async function searchInternetArchive(
+  apiSite: ApiSite,
+  query: string
+): Promise<SearchResult[]> {
   const { params: adapterParams } = parseAdapter(apiSite.api);
   const collection = adapterParams.get('collection') || 'feature_films';
   const term = safeSearchTerm(query);
@@ -197,13 +217,20 @@ async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<S
     page: '1',
     output: 'json',
   });
-  ['identifier', 'title', 'description', 'year', 'date', 'subject', 'creator', 'licenseurl'].forEach((field) =>
-    params.append('fl[]', field)
-  );
+  [
+    'identifier',
+    'title',
+    'description',
+    'year',
+    'date',
+    'subject',
+    'creator',
+    'licenseurl',
+  ].forEach((field) => params.append('fl[]', field));
 
-  const data = await fetchJson<{ response?: { docs?: ArchiveSearchDoc[] } }>(
-    `${ARCHIVE_SEARCH_URL}?${params.toString()}`
-  );
+  const data = await fetchJson<{
+    response?: { docs?: ArchiveSearchDoc[] };
+  }>(`${ARCHIVE_SEARCH_URL}?${params.toString()}`);
 
   return (data.response?.docs || [])
     .filter((doc) => doc.identifier && doc.title)
@@ -212,7 +239,9 @@ async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<S
       return {
         id: encodeOpaqueId('ia', identifier),
         title: toText(doc.title).trim(),
-        poster: `https://archive.org/services/img/${encodeURIComponent(identifier)}`,
+        poster: `https://archive.org/services/img/${encodeURIComponent(
+          identifier
+        )}`,
         episodes: [],
         episodes_titles: [],
         source: apiSite.key,
@@ -226,7 +255,10 @@ async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<S
     });
 }
 
-async function getInternetArchiveDetail(apiSite: ApiSite, id: string): Promise<SearchResult> {
+async function getInternetArchiveDetail(
+  apiSite: ApiSite,
+  id: string
+): Promise<SearchResult> {
   const identifier = decodeOpaqueId(id, 'ia');
   const data = await fetchJson<ArchiveMetadataResponse>(
     `${ARCHIVE_METADATA_URL}/${encodeURIComponent(identifier)}`,
@@ -240,15 +272,20 @@ async function getInternetArchiveDetail(apiSite: ApiSite, id: string): Promise<S
   }
 
   const title = toText(metadata.title) || identifier;
-  const episodes = files.map((file) => archiveDownloadUrl(identifier, file.name || ''));
-  const episodesTitles = files.map((file, index) =>
-    toText(file.title) || (files.length === 1 ? '正片' : `视频 ${index + 1}`)
+  const episodes = files.map((file) =>
+    archiveDownloadUrl(identifier, file.name || '')
+  );
+  const episodesTitles = files.map(
+    (file, index) =>
+      toText(file.title) || (files.length === 1 ? '正片' : `视频 ${index + 1}`)
   );
 
   return {
     id,
     title,
-    poster: `https://archive.org/services/img/${encodeURIComponent(identifier)}`,
+    poster: `https://archive.org/services/img/${encodeURIComponent(
+      identifier
+    )}`,
     episodes,
     episodes_titles: episodesTitles,
     source: apiSite.key,
@@ -264,22 +301,36 @@ async function getInternetArchiveDetail(apiSite: ApiSite, id: string): Promise<S
 function getCommonsDescription(info: CommonsImageInfo): string {
   const metadata = info.extmetadata || {};
   return cleanHtmlTags(
-    metadata.ImageDescription?.value || metadata.ObjectName?.value || metadata.Credit?.value || ''
+    metadata.ImageDescription?.value ||
+      metadata.ObjectName?.value ||
+      metadata.Credit?.value ||
+      ''
   );
 }
 
-function commonsPageToResult(apiSite: ApiSite, page: CommonsPage): SearchResult | null {
+function commonsPageToResult(
+  apiSite: ApiSite,
+  page: CommonsPage
+): SearchResult | null {
   const title = page.title || '';
   const info = page.imageinfo?.[0];
   const mediaUrl = info?.url || '';
   const mime = info?.mime || '';
 
-  if (!title || !mediaUrl || (!mime.startsWith('video/') && !/.(webm|ogv|ogg|mp4)$/i.test(mediaUrl))) {
+  if (
+    !title ||
+    !mediaUrl ||
+    (!mime.startsWith('video/') &&
+      !/\.(webm|ogv|ogg|mp4)$/i.test(mediaUrl))
+  ) {
     return null;
   }
 
   const metadata = info?.extmetadata || {};
-  const license = metadata.LicenseShortName?.value || metadata.UsageTerms?.value || '开放授权';
+  const license =
+    metadata.LicenseShortName?.value ||
+    metadata.UsageTerms?.value ||
+    '开放授权';
 
   return {
     id: encodeOpaqueId('wc', title),
@@ -290,14 +341,20 @@ function commonsPageToResult(apiSite: ApiSite, page: CommonsPage): SearchResult 
     source: apiSite.key,
     source_name: apiSite.name,
     class: `Wikimedia Commons · ${cleanHtmlTags(license)}`,
-    year: getYear(metadata.DateTimeOriginal?.value, metadata.DateTime?.value),
+    year: getYear(
+      metadata.DateTimeOriginal?.value,
+      metadata.DateTime?.value
+    ),
     desc: getCommonsDescription(info),
     type_name: '开放授权视频',
     douban_id: 0,
   };
 }
 
-async function queryCommons(apiSite: ApiSite, params: URLSearchParams): Promise<SearchResult[]> {
+async function queryCommons(
+  apiSite: ApiSite,
+  params: URLSearchParams
+): Promise<SearchResult[]> {
   params.set('action', 'query');
   params.set('prop', 'imageinfo');
   params.set('iiprop', 'url|mime|size|extmetadata');
@@ -306,13 +363,18 @@ async function queryCommons(apiSite: ApiSite, params: URLSearchParams): Promise<
   params.set('formatversion', '2');
   params.set('origin', '*');
 
-  const data = await fetchJson<CommonsResponse>(`${COMMONS_API_URL}?${params.toString()}`);
+  const data = await fetchJson<CommonsResponse>(
+    `${COMMONS_API_URL}?${params.toString()}`
+  );
   return (data.query?.pages || [])
     .map((page) => commonsPageToResult(apiSite, page))
     .filter((item): item is SearchResult => item !== null);
 }
 
-async function searchWikimediaCommons(apiSite: ApiSite, query: string): Promise<SearchResult[]> {
+async function searchWikimediaCommons(
+  apiSite: ApiSite,
+  query: string
+): Promise<SearchResult[]> {
   const term = safeSearchTerm(query);
   if (!term) return [];
 
@@ -327,9 +389,15 @@ async function searchWikimediaCommons(apiSite: ApiSite, query: string): Promise<
   );
 }
 
-async function getWikimediaCommonsDetail(apiSite: ApiSite, id: string): Promise<SearchResult> {
+async function getWikimediaCommonsDetail(
+  apiSite: ApiSite,
+  id: string
+): Promise<SearchResult> {
   const fileTitle = decodeOpaqueId(id, 'wc');
-  const results = await queryCommons(apiSite, new URLSearchParams({ titles: fileTitle }));
+  const results = await queryCommons(
+    apiSite,
+    new URLSearchParams({ titles: fileTitle })
+  );
   const detail = results[0];
 
   if (!detail) {
@@ -339,11 +407,18 @@ async function getWikimediaCommonsDetail(apiSite: ApiSite, id: string): Promise<
   return { ...detail, id };
 }
 
-export async function searchPublicMedia(apiSite: ApiSite, query: string): Promise<SearchResult[]> {
+export async function searchPublicMedia(
+  apiSite: ApiSite,
+  query: string
+): Promise<SearchResult[]> {
   try {
     const { kind } = parseAdapter(apiSite.api);
-    if (kind === 'internet-archive') return await searchInternetArchive(apiSite, query);
-    if (kind === 'wikimedia-commons') return await searchWikimediaCommons(apiSite, query);
+    if (kind === 'internet-archive') {
+      return await searchInternetArchive(apiSite, query);
+    }
+    if (kind === 'wikimedia-commons') {
+      return await searchWikimediaCommons(apiSite, query);
+    }
     return [];
   } catch (error) {
     console.warn(`公开资源搜索失败 ${apiSite.name}:`, error);
@@ -351,10 +426,17 @@ export async function searchPublicMedia(apiSite: ApiSite, query: string): Promis
   }
 }
 
-export async function getPublicMediaDetail(apiSite: ApiSite, id: string): Promise<SearchResult> {
+export async function getPublicMediaDetail(
+  apiSite: ApiSite,
+  id: string
+): Promise<SearchResult> {
   const { kind } = parseAdapter(apiSite.api);
-  if (kind === 'internet-archive') return getInternetArchiveDetail(apiSite, id);
-  if (kind === 'wikimedia-commons') return getWikimediaCommonsDetail(apiSite, id);
+  if (kind === 'internet-archive') {
+    return getInternetArchiveDetail(apiSite, id);
+  }
+  if (kind === 'wikimedia-commons') {
+    return getWikimediaCommonsDetail(apiSite, id);
+  }
   throw new Error('未知的公开资源适配器');
 }
 
@@ -368,10 +450,13 @@ export async function searchPublicMediaExact(
   const match =
     results.find(
       (result) =>
-        normalizeSearch(result.title) === normalizedQuery && (!year || result.year === year)
+        normalizeSearch(result.title) === normalizedQuery &&
+        (!year || result.year === year)
     ) ||
     results.find(
-      (result) => normalizeSearch(result.title).includes(normalizedQuery) && (!year || result.year === year)
+      (result) =>
+        normalizeSearch(result.title).includes(normalizedQuery) &&
+        (!year || result.year === year)
     );
 
   if (!match) return null;
