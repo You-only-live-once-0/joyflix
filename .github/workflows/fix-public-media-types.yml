@@ -1,0 +1,29 @@
+name: Fix public media types
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-public-media-types.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Fix public media types
+        run: node scripts/fix-public-media-types.mjs
+      - name: Commit type guard
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: guard optional public media metadata"
+          git push
