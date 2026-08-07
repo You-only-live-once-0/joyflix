@@ -2,9 +2,6 @@
 
 'use client';
 
-import Artplayer from 'artplayer';
-import Hls from 'hls.js';
-
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
@@ -232,11 +229,59 @@ function PlayPageClient() {
   ): Promise<SearchResult> => {
     if (sources.length === 1) return sources[0];
 
+    // 短期记住同一部剧最近表现最好的线路。下一集先快速验证该线路，
+    // 验证通过就直接使用，避免每次都对全部片源做完整测速。
+    const bestSourceMemoryKey = `joyflix:best-source:v1:${encodeURIComponent(
+      searchTitle || videoTitleRef.current
+    )}:${videoYearRef.current || 'unknown'}`;
+    try {
+      const raw = localStorage.getItem(bestSourceMemoryKey);
+      if (raw) {
+        const remembered = JSON.parse(raw) as {
+          source: string;
+          id: string;
+          savedAt: number;
+        };
+        if (Date.now() - remembered.savedAt < 30 * 60 * 1000) {
+          const candidate = sources.find(
+            (source) =>
+              source.source === remembered.source && source.id === remembered.id
+          );
+          const episodeIndex = Math.min(
+            currentEpisodeIndexRef.current,
+            Math.max((candidate?.episodes?.length || 1) - 1, 0)
+          );
+          const episodeUrl = candidate?.episodes?.[episodeIndex];
+          if (candidate && episodeUrl) {
+            const startedAt = performance.now();
+            const quickCheck = await Promise.race([
+              fetch(episodeUrl, { method: 'HEAD', mode: 'no-cors' }).then(
+                () => true
+              ),
+              new Promise<boolean>((resolve) =>
+                setTimeout(() => resolve(false), 1200)
+              ),
+            ]).catch(() => false);
+            if (quickCheck && performance.now() - startedAt < 1200) {
+              console.log(`沿用近期最佳线路: ${candidate.source_name}`);
+              return candidate;
+            }
+          }
+        }
+      }
+    } catch {
+      // localStorage 或快速探测不可用时回退到完整优选流程。
+    }
+
     // 第一阶段：快速Ping测试
     console.log('开始第一阶段：快速Ping测试');
     const PING_THRESHOLD = 800; // 800毫秒
     const pingPromises = sources.map(source => {
-        const episodeUrl = source.episodes?.[0];
+        const episodeIndex = Math.min(
+          currentEpisodeIndexRef.current,
+          Math.max((source.episodes?.length || 1) - 1, 0)
+        );
+        const episodeUrl = source.episodes?.[episodeIndex] || source.episodes?.[0];
         if (!episodeUrl) return Promise.resolve({ source, ping: Infinity });
         const start = performance.now();
         // 使用HEAD请求以获得更准确的ping时间
@@ -342,6 +387,22 @@ function PlayPageClient() {
     }));
 
     resultsWithScore.sort((a, b) => b.score - a.score);
+
+    try {
+      const winner = resultsWithScore[0]?.source;
+      if (winner) {
+        localStorage.setItem(
+          bestSourceMemoryKey,
+          JSON.stringify({
+            source: winner.source,
+            id: winner.id,
+            savedAt: Date.now(),
+          })
+        );
+      }
+    } catch {
+      // 存储失败不影响播放。
+    }
 
     console.log('播放源评分排序结果:');
     resultsWithScore.forEach((result, index) => {
@@ -1982,6 +2043,14 @@ function PlayPageClient() {
                 ) {
                   const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;
                   health.failedSources.add(currentKey);
+                  try {
+                    const memoryKey = `joyflix:best-source:v1:${encodeURIComponent(
+                      searchTitle || videoTitleRef.current
+                    )}:${videoYearRef.current || 'unknown'}`;
+                    localStorage.removeItem(memoryKey);
+                  } catch {
+                    // 清理失败不影响自动换源。
+                  }
                   const episodeIndex = currentEpisodeIndexRef.current;
                   const candidate = availableSources.find((source) => {
                     const key = `${source.source}-${source.id}`;

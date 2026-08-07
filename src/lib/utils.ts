@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,no-console */
 import he from 'he';
-import Hls from 'hls.js';
 
 function getDoubanImageProxyConfig(): {
   proxyType:
@@ -131,10 +130,27 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
       // 4. 并行测试分片下载速度
       const testSegment = async (url: string): Promise<number> => {
         try {
+          // 测速只读取前 256 KiB，避免为了选源先把多个完整 TS/fMP4 分片下载一遍。
+          const SAMPLE_LIMIT = 256 * 1024;
           const startTime = performance.now();
           const segmentResponse = await fetch(url, { signal: controller.signal });
           if (!segmentResponse.ok) return 0;
-          const size = (await segmentResponse.arrayBuffer()).byteLength;
+
+          let size = 0;
+          if (segmentResponse.body) {
+            const reader = segmentResponse.body.getReader();
+            while (size < SAMPLE_LIMIT) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              size += value?.byteLength || 0;
+            }
+            if (size >= SAMPLE_LIMIT) {
+              await reader.cancel().catch(() => undefined);
+            }
+          } else {
+            size = Math.min((await segmentResponse.arrayBuffer()).byteLength, SAMPLE_LIMIT);
+          }
+
           const loadTime = performance.now() - startTime;
           if (loadTime <= 0 || size <= 0) return 0;
           return size / 1024 / (loadTime / 1000); // KB/s
