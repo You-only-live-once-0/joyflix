@@ -1,61 +1,87 @@
 import { NextResponse } from 'next/server';
 
-import {
-  getPublicMediaDetail,
-  searchPublicMedia,
-} from '@/lib/public-media';
-
 export const runtime = 'edge';
 
+type ProbeResult = {
+  ok: boolean;
+  status?: number;
+  contentType?: string | null;
+  preview?: string;
+  error?: string;
+};
+
+async function probe(url: string): Promise<ProbeResult> {
+  try {
+    const response = await fetch(url, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
+    const text = await response.text();
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      preview: text.slice(0, 800),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function GET() {
-  const featureSite = {
-    key: 'ia_feature_films',
-    name: 'Internet Archive 公版电影',
-    api: 'adapter:internet-archive?collection=feature_films',
-  };
-  const prelingerSite = {
-    key: 'ia_prelinger',
-    name: 'Prelinger 历史影像',
-    api: 'adapter:internet-archive?collection=prelinger',
-  };
-  const commonsSite = {
-    key: 'wikimedia_commons',
-    name: 'Wikimedia Commons 开放视频',
-    api: 'adapter:wikimedia-commons',
-  };
+  const archiveSimple = new URL('https://archive.org/advancedsearch.php');
+  archiveSimple.searchParams.set(
+    'q',
+    'collection:feature_films AND mediatype:movies AND title:(Night of the Living Dead)'
+  );
+  archiveSimple.searchParams.set('rows', '5');
+  archiveSimple.searchParams.set('page', '1');
+  archiveSimple.searchParams.set('output', 'json');
+  archiveSimple.searchParams.append('fl[]', 'identifier');
+  archiveSimple.searchParams.append('fl[]', 'title');
 
-  const [featureResults, prelingerResults, commonsResults] = await Promise.all([
-    searchPublicMedia(featureSite, 'Night of the Living Dead'),
-    searchPublicMedia(prelingerSite, 'Duck and Cover'),
-    searchPublicMedia(commonsSite, 'Apollo 11'),
-  ]);
+  const archiveExact = new URL('https://archive.org/advancedsearch.php');
+  archiveExact.searchParams.set(
+    'q',
+    'collection:feature_films AND mediatype:movies AND (title:"Night of the Living Dead" OR description:"Night of the Living Dead" OR subject:"Night of the Living Dead")'
+  );
+  archiveExact.searchParams.set('rows', '5');
+  archiveExact.searchParams.set('page', '1');
+  archiveExact.searchParams.set('output', 'json');
+  archiveExact.searchParams.append('fl[]', 'identifier');
+  archiveExact.searchParams.append('fl[]', 'title');
 
-  const archiveCandidate = featureResults[0] || prelingerResults[0];
-  const archiveSite = featureResults[0] ? featureSite : prelingerSite;
-  const archiveDetail = archiveCandidate
-    ? await getPublicMediaDetail(archiveSite, archiveCandidate.id)
-    : null;
-  const commonsDetail = commonsResults[0]
-    ? await getPublicMediaDetail(commonsSite, commonsResults[0].id)
-    : null;
+  const archiveMetadata =
+    'https://archive.org/metadata/night_of_the_living_dead';
+
+  const commons = new URL('https://commons.wikimedia.org/w/api.php');
+  commons.searchParams.set('action', 'query');
+  commons.searchParams.set('generator', 'search');
+  commons.searchParams.set('gsrsearch', 'Apollo 11');
+  commons.searchParams.set('gsrnamespace', '6');
+  commons.searchParams.set('gsrlimit', '5');
+  commons.searchParams.set('prop', 'imageinfo');
+  commons.searchParams.set('iiprop', 'url|mime|size|extmetadata');
+  commons.searchParams.set('iiurlwidth', '500');
+  commons.searchParams.set('format', 'json');
+  commons.searchParams.set('formatversion', '2');
+  commons.searchParams.set('origin', '*');
+
+  const [archiveSimpleResult, archiveExactResult, archiveMetadataResult, commonsResult] =
+    await Promise.all([
+      probe(archiveSimple.toString()),
+      probe(archiveExact.toString()),
+      probe(archiveMetadata),
+      probe(commons.toString()),
+    ]);
 
   return NextResponse.json({
-    ok:
-      Boolean(archiveDetail?.episodes.length) &&
-      Boolean(commonsDetail?.episodes.length),
-    featureFilms: {
-      count: featureResults.length,
-      firstTitle: featureResults[0]?.title || null,
-    },
-    prelinger: {
-      count: prelingerResults.length,
-      firstTitle: prelingerResults[0]?.title || null,
-    },
-    commons: {
-      count: commonsResults.length,
-      firstTitle: commonsResults[0]?.title || null,
-    },
-    archivePlayableFiles: archiveDetail?.episodes.length || 0,
-    commonsPlayableFiles: commonsDetail?.episodes.length || 0,
+    archiveSimple: archiveSimpleResult,
+    archiveExact: archiveExactResult,
+    archiveMetadata: archiveMetadataResult,
+    commons: commonsResult,
   });
 }
