@@ -1,0 +1,29 @@
+name: Apply public media sources
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-public-media-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply public media patch
+        run: node scripts/apply-public-media-patch.mjs
+      - name: Commit public media adapters
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add licensed public media sources"
+          git push
