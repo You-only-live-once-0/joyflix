@@ -4,7 +4,7 @@ import { getCacheTime, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { SearchResult } from '@/lib/types';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -17,7 +17,15 @@ export async function GET(request: Request) {
   }
 
   const config = await getConfig();
-  const apiSites = config.SourceConfig.filter((site) => !site.disabled);
+  // 同一个 API 地址只请求一次，避免配置别名造成重复出站请求。
+  const seenApis = new Set<string>();
+  const apiSites = config.SourceConfig.filter((site) => !site.disabled).filter(
+    (site) => {
+      if (seenApis.has(site.api)) return false;
+      seenApis.add(site.api);
+      return true;
+    }
+  );
   const cacheTime = await getCacheTime();
 
   const stream = new ReadableStream({
@@ -29,7 +37,7 @@ export async function GET(request: Request) {
           const results: SearchResult[] = await Promise.race([
             searchFromApi(site, query),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`${site.name} timeout`)), 20000)
+              setTimeout(() => reject(new Error(`${site.name} timeout`)), 10000)
             ),
           ]);
 

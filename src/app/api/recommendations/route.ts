@@ -7,7 +7,7 @@ const REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天（毫秒）
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: Request) {
   console.log('API 路由已命中！'); // 早期日志
   const client = getUpstashRedisClient();
 
@@ -27,10 +27,10 @@ export async function GET() {
     // 检查是否需要刷新
     if (!lastUpdated || (now - lastUpdated > REFRESH_INTERVAL_MS)) {
       console.log('需要刷新。尝试刷新缓存...');
-      console.log(`正在从: ${process.env.NEXT_PUBLIC_BASE_URL}/api/douban/categories 获取数据`);
       try {
         // 从原始豆瓣 API 获取
-        const fetchUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/api/douban/categories?kind=movie&category=热门&type=全部&limit=50`;
+        const origin = new URL(request.url).origin;
+        const fetchUrl = `${origin}/api/douban/categories?kind=movie&category=热门&type=全部&limit=50`;
         console.log(`正在从内部 API 获取数据: ${fetchUrl}`);
         const response = await fetch(fetchUrl);
 
@@ -102,7 +102,15 @@ export async function GET() {
     const shuffled = recommendedMovies.sort(() => 0.5 - Math.random());
     const selectedRecommendations = shuffled.slice(0, 6);
 
-    return NextResponse.json({ list: selectedRecommendations });
+    return NextResponse.json(
+      { list: selectedRecommendations },
+      {
+        headers: {
+          'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+          'Vercel-CDN-Cache-Control': 'public, s-maxage=3600',
+        },
+      }
+    );
   } catch (error) {
     console.error('推荐 API 中出错:', error);
     return NextResponse.json({ list: [] }, { status: 500 });

@@ -109,22 +109,6 @@ const SearchPageClient: React.FC = () => {
       return document.body.scrollTop || 0;
     };
 
-    // 使用 requestAnimationFrame 持续检测滚动位置
-    let isRunning = false;
-    const checkScrollPosition = () => {
-      if (!isRunning) return;
-
-      const scrollTop = getScrollTop();
-      const shouldShow = scrollTop > 300;
-      setShowBackToTop(shouldShow);
-
-      requestAnimationFrame(checkScrollPosition);
-    };
-
-    // 启动持续检测
-    isRunning = true;
-    checkScrollPosition();
-
     // 监听 body 元素的滚动事件
     const handleScroll = () => {
       const scrollTop = getScrollTop();
@@ -135,8 +119,6 @@ const SearchPageClient: React.FC = () => {
 
     return () => {
       unsubscribe();
-      isRunning = false; // 停止 requestAnimationFrame 循环
-
       // 移除 body 滚动事件监听器
       document.body.removeEventListener('scroll', handleScroll);
     };
@@ -236,23 +218,11 @@ const SearchPageClient: React.FC = () => {
                 hasSetLoadingFalse = true;
               }
 
-              setSearchResults((prevResults) => {
-                const allResults = [...prevResults, ...filteredResults];
-                return allResults.sort((a, b) => {
-                  const aExactMatch = a.title === query.trim();
-                  const bExactMatch = b.title === query.trim();
-                  if (aExactMatch && !bExactMatch) return -1;
-                  if (!aExactMatch && bExactMatch) return 1;
-
-                  if (a.year === b.year) {
-                    return a.title.localeCompare(b.title);
-                  } else {
-                    if (a.year === 'unknown') return 1;
-                    if (b.year === 'unknown') return -1;
-                    return parseInt(b.year) - parseInt(a.year);
-                  }
-                });
-              });
+              // 聚合结果会在 useMemo 中统一排序；这里仅追加，避免每个流式分块都对全量结果重新排序。
+              setSearchResults((prevResults) => [
+                ...prevResults,
+                ...filteredResults,
+              ]);
             }
           } catch (e) {
             console.error('Error parsing streaming JSON', e);
@@ -301,9 +271,6 @@ const SearchPageClient: React.FC = () => {
     setShowSuggestions(false);
 
     router.push(`/search?q=${encodeURIComponent(trimmed)}`);
-    // 直接发请求
-    fetchSearchResults(trimmed);
-
     // 保存到搜索历史 (事件监听会自动更新界面)
     addSearchHistory(trimmed);
   };
@@ -317,7 +284,6 @@ const SearchPageClient: React.FC = () => {
     setShowResults(true);
 
     router.push(`/search?q=${encodeURIComponent(suggestion)}`);
-    fetchSearchResults(suggestion);
     addSearchHistory(suggestion);
   };
 

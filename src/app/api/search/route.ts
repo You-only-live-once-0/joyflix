@@ -28,13 +28,20 @@ export async function GET(request: Request) {
   }
 
   const config = await getConfig();
-  const apiSites = config.SourceConfig.filter((site) => !site.disabled);
+  const seenApis = new Set<string>();
+  const apiSites = config.SourceConfig.filter((site) => !site.disabled).filter(
+    (site) => {
+      if (seenApis.has(site.api)) return false;
+      seenApis.add(site.api);
+      return true;
+    }
+  );
   // 添加超时控制和错误处理，避免慢接口拖累整体响应
   const searchPromises = apiSites.map((site) =>
     Promise.race([
       searchFromApi(site, query),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`${site.name} timeout`)), 20000)
+        setTimeout(() => reject(new Error(`${site.name} timeout`)), 10000)
       ),
     ]).catch((err) => {
       console.warn(`搜索失败 ${site.name}:`, err.message);
