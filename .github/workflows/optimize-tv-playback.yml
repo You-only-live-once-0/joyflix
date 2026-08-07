@@ -1,0 +1,72 @@
+name: Optimize TV playback
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/optimize-tv-playback.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply playback optimizations
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/app/play/page.tsx')
+          s = p.read_text()
+
+          old = """        const episodeUrl =\n          source.episodes.length > 1\n            ? source.episodes[1] // 如果可能，使用靠后的集数进行测试\n            : source.episodes[0];\n"""
+          new = """        // 电视剧不同集可能落到不同 CDN 节点，优先测试用户当前正在看的集数\n        // 而不是固定测试第 2 集，避免“测速很快、实际这一集很卡”。\n        const targetEpisodeIndex = Math.min(\n          currentEpisodeIndexRef.current,\n          source.episodes.length - 1\n        );\n        const episodeUrl = source.episodes[targetEpisodeIndex] || source.episodes[0];\n"""
+          assert old in s, 'source episode test block not found'
+          s = s.replace(old, new, 1)
+
+          s = s.replace("// --- 1. 分辨率评分 (权重: 30%) ---", "// --- 1. 分辨率评分 (权重: 15%)：电视剧优先流畅，不盲目追高码率 ---", 1)
+          s = s.replace("score += qualityScore * 0.30;", "score += qualityScore * 0.15;", 1)
+          s = s.replace("// --- 2. 下载速度评分 (权重: 40%) ---", "// --- 2. 下载速度评分 (权重: 50%) ---", 1)
+          s = s.replace("score += speedScore * 0.40;", "score += speedScore * 0.50;", 1)
+          s = s.replace("// --- 4. 稳定性评分 (权重: 20%) ---", "// --- 4. 稳定性评分 (权重: 25%) ---", 1)
+          s = s.replace("score += jitterScore * 0.20;", "score += jitterScore * 0.25;", 1)
+
+          old = """  const artPlayerRef = useRef<any>(null);\n  const artRef = useRef<HTMLDivElement | null>(null);\n\n  // Wake Lock 相关\n"""
+          new = """  const artPlayerRef = useRef<any>(null);\n  const artRef = useRef<HTMLDivElement | null>(null);\n\n  // 播放健康状态：用于卡顿时先降码率，连续异常时自动切换备用源。\n  const playbackHealthRef = useRef({\n    stalls: 0,\n    lastStallAt: 0,\n    lastFailoverAt: 0,\n    failedSources: new Set<string>(),\n  });\n\n  // Wake Lock 相关\n"""
+          assert old in s, 'player refs block not found'
+          s = s.replace(old, new, 1)
+
+          old = """            const hls = new Hls({\n              debug: false, // 关闭日志\n              enableWorker: true, // WebWorker 解码，降低主线程压力\n              lowLatencyMode: true, // 开启低延迟 LL-HLS\n\n              /* 缓冲/内存相关 - 极致流畅版 */\n              maxBufferLength: 80, // 前向缓冲最大 80s，过大容易导致高延迟\n              maxMaxBufferLength: 200, // 设置一个安全的最大上限，防止意外的缓冲裁剪\n              backBufferLength: 40, // 仅保留 40s 已播放内容，避免内存占用\n              maxBufferSize: 500 * 1000 * 1000, // 约 500MB，超出后触发清理\n\n              /* 自定义loader */\n              loader: blockAdEnabledRef.current\n                ? CustomHlsJsLoader\n                : Hls.DefaultConfig.loader,\n            });\n"""
+          new = """            const hls = new Hls({\n              debug: false,\n              enableWorker: true,\n\n              // 当前页面播放的是点播电视剧，不需要 LL-HLS 的直播低延迟策略。\n              // VOD 关闭低延迟后，ABR 可以更积极地建立安全缓冲区。\n              lowLatencyMode: false,\n\n              // 以“不断流”为第一目标。保持约 60 秒前向缓冲，同时限制内存。\n              maxBufferLength: 60,\n              maxMaxBufferLength: 120,\n              backBufferLength: 30,\n              maxBufferSize: 120 * 1000 * 1000,\n              maxBufferHole: 0.5,\n\n              // 自适应码率更保守：带宽稍有波动就优先选择更稳的档位。\n              abrBandWidthFactor: 0.75,\n              abrBandWidthUpFactor: 0.6,\n              maxStarvationDelay: 2,\n              maxLoadingDelay: 4,\n              capLevelToPlayerSize: true,\n              capLevelOnFPSDrop: true,\n              startFragPrefetch: true,\n              nudgeMaxRetry: 5,\n              highBufferWatchdogPeriod: 1,\n\n              /* 自定义loader */\n              loader: blockAdEnabledRef.current\n                ? CustomHlsJsLoader\n                : Hls.DefaultConfig.loader,\n            });\n"""
+          assert old in s, 'Hls config block not found'
+          s = s.replace(old, new, 1)
+
+          old = """            hls.on(Hls.Events.ERROR, function (event: any, data: any) {\n              console.error('HLS Error:', event, data);\n              if (data.fatal) {\n                switch (data.type) {\n                  case Hls.ErrorTypes.NETWORK_ERROR:\n                    console.log('网络错误，尝试恢复...');\n                    hls.startLoad();\n                    break;\n                  case Hls.ErrorTypes.MEDIA_ERROR:\n                    console.log('媒体错误，尝试恢复...');\n                    hls.recoverMediaError();\n                    break;\n                  default:\n                    console.log('无法恢复的错误');\n                    hls.destroy();\n                    break;\n                }\n              }\n            });\n"""
+          new = """            hls.on(Hls.Events.ERROR, function (event: any, data: any) {\n              console.error('HLS Error:', event, data);\n\n              const health = playbackHealthRef.current;\n              const now = Date.now();\n              const isPlaybackStall =\n                data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR ||\n                data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT ||\n                data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR;\n\n              if (isPlaybackStall) {\n                // 超过 45 秒没有新卡顿则重新计数，避免偶发网络抖动触发换源。\n                if (now - health.lastStallAt > 45000) health.stalls = 0;\n                health.lastStallAt = now;\n                health.stalls += 1;\n\n                // 第一次/第二次卡顿先主动降一级，优先恢复连续播放。\n                if (health.stalls <= 2 && hls.levels?.length > 1) {\n                  const currentLevel =\n                    hls.currentLevel >= 0 ? hls.currentLevel : hls.nextAutoLevel;\n                  if (currentLevel > 0) {\n                    hls.nextLevel = currentLevel - 1;\n                    hls.autoLevelCapping = currentLevel - 1;\n                    console.log('检测到卡顿，自动降低一档清晰度');\n                  }\n                }\n\n                // 同一时间窗口连续卡顿 3 次以上，且存在备用路线时自动换源。\n                if (\n                  health.stalls >= 3 &&\n                  now - health.lastFailoverAt > 60000 &&\n                  availableSources.length > 1\n                ) {\n                  const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;\n                  health.failedSources.add(currentKey);\n                  const episodeIndex = currentEpisodeIndexRef.current;\n                  const candidate = availableSources.find((source) => {\n                    const key = `${source.source}-${source.id}`;\n                    return (\n                      key !== currentKey &&\n                      !health.failedSources.has(key) &&\n                      Boolean(source.episodes?.[episodeIndex])\n                    );\n                  });\n\n                  if (candidate) {\n                    health.lastFailoverAt = now;\n                    health.stalls = 0;\n                    resumeTimeRef.current = artPlayerRef.current?.currentTime || 0;\n                    console.log(`连续卡顿，自动切换到备用源: ${candidate.source_name}`);\n                    void handleSourceChange(\n                      candidate.source,\n                      candidate.id,\n                      candidate.title\n                    );\n                    return;\n                  }\n                }\n              }\n\n              if (data.fatal) {\n                switch (data.type) {\n                  case Hls.ErrorTypes.NETWORK_ERROR:\n                    console.log('网络错误，尝试恢复...');\n                    hls.startLoad();\n                    break;\n                  case Hls.ErrorTypes.MEDIA_ERROR:\n                    console.log('媒体错误，尝试恢复...');\n                    hls.recoverMediaError();\n                    break;\n                  default:\n                    console.log('无法恢复的错误');\n                    hls.destroy();\n                    break;\n                }\n              }\n            });\n"""
+          assert old in s, 'Hls error block not found'
+          s = s.replace(old, new, 1)
+
+          old = """      artPlayerRef.current.on('video:canplay', () => {\n        // 若存在需要恢复的播放进度，则跳转\n"""
+          new = """      artPlayerRef.current.on('video:canplay', () => {\n        // 成功恢复可播放后清掉短时卡顿计数；保留失败源列表，避免来回横跳。\n        playbackHealthRef.current.stalls = 0;\n\n        // 若存在需要恢复的播放进度，则跳转\n"""
+          assert old in s, 'canplay block not found'
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+          rm -f .github/workflows/optimize-tv-playback.yml
+
+      - name: Commit optimized playback
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/app/play/page.tsx .github/workflows/optimize-tv-playback.yml
+          git commit -m 'perf: optimize TV buffering and source failover'
+          git push origin HEAD:main
