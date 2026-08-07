@@ -1,5 +1,9 @@
 import { API_CONFIG, ApiSite } from '@/lib/config';
 import { SearchResult } from '@/lib/types';
+import {
+  isPublicMediaAdapter,
+  searchPublicMediaExact,
+} from '@/lib/public-media';
 import { cleanHtmlTags } from '@/lib/utils';
 
 interface ApiSearchItem {
@@ -74,6 +78,10 @@ export async function searchAndFindFromApi(
   year: string | null,
   maxPages: number
 ): Promise<SearchResult | null> {
+  if (isPublicMediaAdapter(apiSite.api)) {
+    return searchPublicMediaExact(apiSite, query, year);
+  }
+
   try {
     const apiBaseUrl = apiSite.api;
     const firstPageUrl = apiBaseUrl + API_CONFIG.search.path + encodeURIComponent(query);

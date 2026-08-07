@@ -1,5 +1,10 @@
 import { API_CONFIG, ApiSite, getConfig } from '@/lib/config';
 import { SearchResult } from '@/lib/types';
+import {
+  getPublicMediaDetail,
+  isPublicMediaAdapter,
+  searchPublicMedia,
+} from '@/lib/public-media';
 import { cleanHtmlTags } from '@/lib/utils';
 
 interface ApiSearchItem {
@@ -19,6 +24,10 @@ export async function searchFromApi(
   apiSite: ApiSite,
   query: string
 ): Promise<SearchResult[]> {
+  if (isPublicMediaAdapter(apiSite.api)) {
+    return searchPublicMedia(apiSite, query);
+  }
+
   try {
     const apiBaseUrl = apiSite.api;
     const apiUrl =
@@ -218,6 +227,10 @@ export async function getDetailFromApi(
   apiSite: ApiSite,
   id: string
 ): Promise<SearchResult> {
+  if (isPublicMediaAdapter(apiSite.api)) {
+    return getPublicMediaDetail(apiSite, id);
+  }
+
   if (apiSite.detail) {
     return handleSpecialSourceDetail(id, apiSite);
   }

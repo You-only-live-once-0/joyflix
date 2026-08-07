@@ -111,9 +111,21 @@
     "hn": {
       "api": "https://www.hongniuzy2.com/api.php/provide/vod",
       "name": "红牛资源"
+    },
+    "ia_feature_films": {
+      "api": "adapter:internet-archive?collection=feature_films",
+      "name": "Internet Archive 公版电影"
+    },
+    "ia_prelinger": {
+      "api": "adapter:internet-archive?collection=prelinger",
+      "name": "Prelinger 历史影像"
+    },
+    "wikimedia_commons": {
+      "api": "adapter:wikimedia-commons",
+      "name": "Wikimedia Commons 开放视频"
     }
   },
-    "custom_category": [
+  "custom_category": [
     {
       "name": "经典",
       "type": "movie",

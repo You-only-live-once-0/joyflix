@@ -76,7 +76,7 @@ export default function VideoCard({
     setIsTablet(isTabletDevice);
   }, []);
 
-  const isAggregate = from === 'search' && !!items?.length;
+  const isAggregate = from === 'search' && (items?.length || 0) > 1;
 
   const aggregateData = useMemo(() => {
     if (!isAggregate || !items) return null;

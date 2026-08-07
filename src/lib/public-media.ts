@@ -1,21 +1,4 @@
-import fs from 'node:fs';
-
-function read(path) {
-  return fs.readFileSync(path, 'utf8');
-}
-
-function write(path, content) {
-  fs.writeFileSync(path, content);
-}
-
-function replaceOnce(content, search, replacement, label) {
-  if (!content.includes(search)) {
-    throw new Error(`Patch target not found: ${label}`);
-  }
-  return content.replace(search, replacement);
-}
-
-const publicMediaSource = `import { ApiSite } from '@/lib/config';
+import { ApiSite } from '@/lib/config';
 import { SearchResult } from '@/lib/types';
 import { cleanHtmlTags } from '@/lib/utils';
 
@@ -99,7 +82,7 @@ async function fetchJson<T>(url: string, timeout = PUBLIC_MEDIA_TIMEOUT): Promis
     });
 
     if (!response.ok) {
-      throw new Error(\`Public media request failed: \${response.status}\`);
+      throw new Error(`Public media request failed: ${response.status}`);
     }
 
     return (await response.json()) as T;
@@ -117,7 +100,7 @@ function toText(value: unknown): string {
 }
 
 function normalizeTitle(value: string): string {
-  return value.replace(/^File:/i, '').replace(/\.(webm|ogv|ogg|mp4)$/i, '').trim();
+  return value.replace(/^File:/i, '').replace(/.(webm|ogv|ogg|mp4)$/i, '').trim();
 }
 
 function normalizeSearch(value: string): string {
@@ -126,8 +109,8 @@ function normalizeSearch(value: string): string {
 
 function safeSearchTerm(value: string): string {
   return value
-    .replace(/[^\p{L}\p{N}\s._-]/gu, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[^p{L}p{N}s._-]/gu, ' ')
+    .replace(/s+/g, ' ')
     .trim()
     .slice(0, 120);
 }
@@ -138,14 +121,14 @@ function encodeOpaqueId(prefix: 'ia' | 'wc', value: string): string {
   bytes.forEach((byte) => {
     binary += String.fromCharCode(byte);
   });
-  return \`\${prefix}_\${btoa(binary)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '')}\`;
+  return `${prefix}_${btoa(binary)
+    .replace(/+/g, '-')
+    .replace(///g, '_')
+    .replace(/=+$/g, '')}`;
 }
 
 function decodeOpaqueId(id: string, expectedPrefix: 'ia' | 'wc'): string {
-  const marker = \`\${expectedPrefix}_\`;
+  const marker = `${expectedPrefix}_`;
   if (!id.startsWith(marker)) {
     throw new Error('Invalid public media identifier');
   }
@@ -158,7 +141,7 @@ function decodeOpaqueId(id: string, expectedPrefix: 'ia' | 'wc'): string {
 }
 
 function getYear(value: unknown, fallback?: unknown): string {
-  const match = \`\${toText(value)} \${toText(fallback)}\`.match(/\b(18|19|20)\d{2}\b/);
+  const match = `${toText(value)} ${toText(fallback)}`.match(/(18|19|20)d{2}/);
   return match?.[0] || 'unknown';
 }
 
@@ -167,7 +150,7 @@ function archiveDownloadUrl(identifier: string, fileName: string): string {
     .split('/')
     .map((part) => encodeURIComponent(part))
     .join('/');
-  return \`https://archive.org/download/\${encodeURIComponent(identifier)}/\${encodedPath}\`;
+  return `https://archive.org/download/${encodeURIComponent(identifier)}/${encodedPath}`;
 }
 
 function archiveFileScore(file: ArchiveFile): number {
@@ -191,7 +174,7 @@ function selectArchiveFiles(files: ArchiveFile[]): ArchiveFile[] {
   const playable = files.filter((file) => {
     const name = file.name || '';
     const lower = name.toLowerCase();
-    if (!/\.(mp4|webm|ogv|ogg)$/i.test(name)) return false;
+    if (!/.(mp4|webm|ogv|ogg)$/i.test(name)) return false;
     if (/(_thumb|thumbs?|sample|trailer|preview|spectrogram)/i.test(lower)) return false;
     if (file.private === true || file.private === 'true') return false;
     return true;
@@ -209,7 +192,7 @@ async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<S
   if (!term) return [];
 
   const params = new URLSearchParams({
-    q: \`collection:\${collection} AND mediatype:movies AND (title:\"\${term}\" OR description:\"\${term}\" OR subject:\"\${term}\")\`,
+    q: `collection:${collection} AND mediatype:movies AND (title:"${term}" OR description:"${term}" OR subject:"${term}")`,
     rows: '24',
     page: '1',
     output: 'json',
@@ -219,7 +202,7 @@ async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<S
   );
 
   const data = await fetchJson<{ response?: { docs?: ArchiveSearchDoc[] } }>(
-    \`\${ARCHIVE_SEARCH_URL}?\${params.toString()}\`
+    `${ARCHIVE_SEARCH_URL}?${params.toString()}`
   );
 
   return (data.response?.docs || [])
@@ -229,7 +212,7 @@ async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<S
       return {
         id: encodeOpaqueId('ia', identifier),
         title: toText(doc.title).trim(),
-        poster: \`https://archive.org/services/img/\${encodeURIComponent(identifier)}\`,
+        poster: `https://archive.org/services/img/${encodeURIComponent(identifier)}`,
         episodes: [],
         episodes_titles: [],
         source: apiSite.key,
@@ -246,7 +229,7 @@ async function searchInternetArchive(apiSite: ApiSite, query: string): Promise<S
 async function getInternetArchiveDetail(apiSite: ApiSite, id: string): Promise<SearchResult> {
   const identifier = decodeOpaqueId(id, 'ia');
   const data = await fetchJson<ArchiveMetadataResponse>(
-    \`\${ARCHIVE_METADATA_URL}/\${encodeURIComponent(identifier)}\`,
+    `${ARCHIVE_METADATA_URL}/${encodeURIComponent(identifier)}`,
     12000
   );
   const metadata = data.metadata || {};
@@ -259,13 +242,13 @@ async function getInternetArchiveDetail(apiSite: ApiSite, id: string): Promise<S
   const title = toText(metadata.title) || identifier;
   const episodes = files.map((file) => archiveDownloadUrl(identifier, file.name || ''));
   const episodesTitles = files.map((file, index) =>
-    toText(file.title) || (files.length === 1 ? '正片' : \`视频 \${index + 1}\`)
+    toText(file.title) || (files.length === 1 ? '正片' : `视频 ${index + 1}`)
   );
 
   return {
     id,
     title,
-    poster: \`https://archive.org/services/img/\${encodeURIComponent(identifier)}\`,
+    poster: `https://archive.org/services/img/${encodeURIComponent(identifier)}`,
     episodes,
     episodes_titles: episodesTitles,
     source: apiSite.key,
@@ -291,7 +274,7 @@ function commonsPageToResult(apiSite: ApiSite, page: CommonsPage): SearchResult 
   const mediaUrl = info?.url || '';
   const mime = info?.mime || '';
 
-  if (!title || !mediaUrl || (!mime.startsWith('video/') && !/\.(webm|ogv|ogg|mp4)$/i.test(mediaUrl))) {
+  if (!title || !mediaUrl || (!mime.startsWith('video/') && !/.(webm|ogv|ogg|mp4)$/i.test(mediaUrl))) {
     return null;
   }
 
@@ -306,7 +289,7 @@ function commonsPageToResult(apiSite: ApiSite, page: CommonsPage): SearchResult 
     episodes_titles: ['正片'],
     source: apiSite.key,
     source_name: apiSite.name,
-    class: \`Wikimedia Commons · \${cleanHtmlTags(license)}\`,
+    class: `Wikimedia Commons · ${cleanHtmlTags(license)}`,
     year: getYear(metadata.DateTimeOriginal?.value, metadata.DateTime?.value),
     desc: getCommonsDescription(info),
     type_name: '开放授权视频',
@@ -323,7 +306,7 @@ async function queryCommons(apiSite: ApiSite, params: URLSearchParams): Promise<
   params.set('formatversion', '2');
   params.set('origin', '*');
 
-  const data = await fetchJson<CommonsResponse>(\`\${COMMONS_API_URL}?\${params.toString()}\`);
+  const data = await fetchJson<CommonsResponse>(`${COMMONS_API_URL}?${params.toString()}`);
   return (data.query?.pages || [])
     .map((page) => commonsPageToResult(apiSite, page))
     .filter((item): item is SearchResult => item !== null);
@@ -363,7 +346,7 @@ export async function searchPublicMedia(apiSite: ApiSite, query: string): Promis
     if (kind === 'wikimedia-commons') return await searchWikimediaCommons(apiSite, query);
     return [];
   } catch (error) {
-    console.warn(\`公开资源搜索失败 \${apiSite.name}:\`, error);
+    console.warn(`公开资源搜索失败 ${apiSite.name}:`, error);
     return [];
   }
 }
@@ -399,81 +382,3 @@ export async function searchPublicMediaExact(
     return match.episodes.length > 0 ? match : null;
   }
 }
-`;
-
-write('src/lib/public-media.ts', publicMediaSource);
-
-{
-  const path = 'src/lib/downstream.ts';
-  let content = read(path);
-  content = replaceOnce(
-    content,
-    "import { SearchResult } from '@/lib/types';\nimport { cleanHtmlTags } from '@/lib/utils';",
-    "import { SearchResult } from '@/lib/types';\nimport {\n  getPublicMediaDetail,\n  isPublicMediaAdapter,\n  searchPublicMedia,\n} from '@/lib/public-media';\nimport { cleanHtmlTags } from '@/lib/utils';",
-    'downstream imports'
-  );
-  content = replaceOnce(
-    content,
-    "): Promise<SearchResult[]> {\n  try {",
-    "): Promise<SearchResult[]> {\n  if (isPublicMediaAdapter(apiSite.api)) {\n    return searchPublicMedia(apiSite, query);\n  }\n\n  try {",
-    'downstream search adapter'
-  );
-  content = replaceOnce(
-    content,
-    "): Promise<SearchResult> {\n  if (apiSite.detail) {",
-    "): Promise<SearchResult> {\n  if (isPublicMediaAdapter(apiSite.api)) {\n    return getPublicMediaDetail(apiSite, id);\n  }\n\n  if (apiSite.detail) {",
-    'downstream detail adapter'
-  );
-  write(path, content);
-}
-
-{
-  const path = 'src/lib/downstream-stream.ts';
-  let content = read(path);
-  content = replaceOnce(
-    content,
-    "import { SearchResult } from '@/lib/types';\nimport { cleanHtmlTags } from '@/lib/utils';",
-    "import { SearchResult } from '@/lib/types';\nimport {\n  isPublicMediaAdapter,\n  searchPublicMediaExact,\n} from '@/lib/public-media';\nimport { cleanHtmlTags } from '@/lib/utils';",
-    'downstream stream imports'
-  );
-  content = replaceOnce(
-    content,
-    "): Promise<SearchResult | null> {\n  try {",
-    "): Promise<SearchResult | null> {\n  if (isPublicMediaAdapter(apiSite.api)) {\n    return searchPublicMediaExact(apiSite, query, year);\n  }\n\n  try {",
-    'downstream stream adapter'
-  );
-  write(path, content);
-}
-
-{
-  const path = 'src/components/VideoCard.tsx';
-  let content = read(path);
-  content = replaceOnce(
-    content,
-    "const isAggregate = from === 'search' && !!items?.length;",
-    "const isAggregate = from === 'search' && (items?.length || 0) > 1;",
-    'single source navigation'
-  );
-  write(path, content);
-}
-
-{
-  const path = 'config.json';
-  const config = JSON.parse(read(path));
-  config.api_site.ia_feature_films = {
-    api: 'adapter:internet-archive?collection=feature_films',
-    name: 'Internet Archive 公版电影',
-  };
-  config.api_site.ia_prelinger = {
-    api: 'adapter:internet-archive?collection=prelinger',
-    name: 'Prelinger 历史影像',
-  };
-  config.api_site.wikimedia_commons = {
-    api: 'adapter:wikimedia-commons',
-    name: 'Wikimedia Commons 开放视频',
-  };
-  write(path, JSON.stringify(config, null, 2) + '\n');
-}
-
-fs.rmSync('scripts/apply-public-media-patch.mjs', { force: true });
-fs.rmSync('.github/workflows/apply-public-media-patch.yml', { force: true });
