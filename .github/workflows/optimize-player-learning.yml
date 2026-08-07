@@ -1,0 +1,210 @@
+name: Optimize player learning
+
+on:
+  push:
+    paths:
+      - '.github/workflows/optimize-player-learning.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Apply player optimizations
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          utils = Path('src/lib/utils.ts')
+          text = utils.read_text()
+          text = text.replace("import Hls from 'hls.js';\n", "")
+
+          old = '''      const testSegment = async (url: string): Promise<number> => {
+        try {
+          const startTime = performance.now();
+          const segmentResponse = await fetch(url, { signal: controller.signal });
+          if (!segmentResponse.ok) return 0;
+          const size = (await segmentResponse.arrayBuffer()).byteLength;
+          const loadTime = performance.now() - startTime;
+          if (loadTime <= 0 || size <= 0) return 0;
+          return size / 1024 / (loadTime / 1000); // KB/s
+        } catch (error) {
+          return 0; // 任何错误都视为速度为0
+        }
+      };'''
+          new = '''      const testSegment = async (url: string): Promise<number> => {
+        try {
+          // 测速只读取前 256 KiB，避免为了选源先把多个完整 TS/fMP4 分片下载一遍。
+          const SAMPLE_LIMIT = 256 * 1024;
+          const startTime = performance.now();
+          const segmentResponse = await fetch(url, { signal: controller.signal });
+          if (!segmentResponse.ok) return 0;
+
+          let size = 0;
+          if (segmentResponse.body) {
+            const reader = segmentResponse.body.getReader();
+            while (size < SAMPLE_LIMIT) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              size += value?.byteLength || 0;
+            }
+            if (size >= SAMPLE_LIMIT) {
+              await reader.cancel().catch(() => undefined);
+            }
+          } else {
+            size = Math.min((await segmentResponse.arrayBuffer()).byteLength, SAMPLE_LIMIT);
+          }
+
+          const loadTime = performance.now() - startTime;
+          if (loadTime <= 0 || size <= 0) return 0;
+          return size / 1024 / (loadTime / 1000); // KB/s
+        } catch (error) {
+          return 0; // 任何错误都视为速度为0
+        }
+      };'''
+          if old not in text:
+            raise SystemExit('utils testSegment block not found')
+          text = text.replace(old, new)
+          utils.write_text(text)
+
+          play = Path('src/app/play/page.tsx')
+          text = play.read_text()
+          text = text.replace("import Artplayer from 'artplayer';\nimport Hls from 'hls.js';\n\n", "")
+
+          old = '''  const preferBestSource = async (
+    sources: SearchResult[]
+  ): Promise<SearchResult> => {
+    if (sources.length === 1) return sources[0];
+
+    // 第一阶段：快速Ping测试'''
+          new = '''  const preferBestSource = async (
+    sources: SearchResult[]
+  ): Promise<SearchResult> => {
+    if (sources.length === 1) return sources[0];
+
+    // 短期记住同一部剧最近表现最好的线路。下一集先快速验证该线路，
+    // 验证通过就直接使用，避免每次都对全部片源做完整测速。
+    const bestSourceMemoryKey = `joyflix:best-source:v1:${encodeURIComponent(
+      searchTitle || videoTitleRef.current
+    )}:${videoYearRef.current || 'unknown'}`;
+    try {
+      const raw = localStorage.getItem(bestSourceMemoryKey);
+      if (raw) {
+        const remembered = JSON.parse(raw) as {
+          source: string;
+          id: string;
+          savedAt: number;
+        };
+        if (Date.now() - remembered.savedAt < 30 * 60 * 1000) {
+          const candidate = sources.find(
+            (source) =>
+              source.source === remembered.source && source.id === remembered.id
+          );
+          const episodeIndex = Math.min(
+            currentEpisodeIndexRef.current,
+            Math.max((candidate?.episodes?.length || 1) - 1, 0)
+          );
+          const episodeUrl = candidate?.episodes?.[episodeIndex];
+          if (candidate && episodeUrl) {
+            const startedAt = performance.now();
+            const quickCheck = await Promise.race([
+              fetch(episodeUrl, { method: 'HEAD', mode: 'no-cors' }).then(
+                () => true
+              ),
+              new Promise<boolean>((resolve) =>
+                setTimeout(() => resolve(false), 1200)
+              ),
+            ]).catch(() => false);
+            if (quickCheck && performance.now() - startedAt < 1200) {
+              console.log(`沿用近期最佳线路: ${candidate.source_name}`);
+              return candidate;
+            }
+          }
+        }
+      }
+    } catch {
+      // localStorage 或快速探测不可用时回退到完整优选流程。
+    }
+
+    // 第一阶段：快速Ping测试'''
+          if old not in text:
+            raise SystemExit('preferBestSource insertion point not found')
+          text = text.replace(old, new)
+
+          old = '''    const pingPromises = sources.map(source => {
+        const episodeUrl = source.episodes?.[0];'''
+          new = '''    const pingPromises = sources.map(source => {
+        const episodeIndex = Math.min(
+          currentEpisodeIndexRef.current,
+          Math.max((source.episodes?.length || 1) - 1, 0)
+        );
+        const episodeUrl = source.episodes?.[episodeIndex] || source.episodes?.[0];'''
+          if old not in text:
+            raise SystemExit('ping episode block not found')
+          text = text.replace(old, new)
+
+          old = '''    resultsWithScore.sort((a, b) => b.score - a.score);
+
+    console.log('播放源评分排序结果:');'''
+          new = '''    resultsWithScore.sort((a, b) => b.score - a.score);
+
+    try {
+      const winner = resultsWithScore[0]?.source;
+      if (winner) {
+        localStorage.setItem(
+          bestSourceMemoryKey,
+          JSON.stringify({
+            source: winner.source,
+            id: winner.id,
+            savedAt: Date.now(),
+          })
+        );
+      }
+    } catch {
+      // 存储失败不影响播放。
+    }
+
+    console.log('播放源评分排序结果:');'''
+          if old not in text:
+            raise SystemExit('score sort block not found')
+          text = text.replace(old, new)
+
+          old = '''                  const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;
+                  health.failedSources.add(currentKey);'''
+          new = '''                  const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;
+                  health.failedSources.add(currentKey);
+                  try {
+                    const memoryKey = `joyflix:best-source:v1:${encodeURIComponent(
+                      searchTitle || videoTitleRef.current
+                    )}:${videoYearRef.current || 'unknown'}`;
+                    localStorage.removeItem(memoryKey);
+                  } catch {
+                    // 清理失败不影响自动换源。
+                  }'''
+          if old not in text:
+            raise SystemExit('failover memory block not found')
+          text = text.replace(old, new)
+          play.write_text(text)
+          PY
+      - name: Validate
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: Commit optimizations
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/lib/utils.ts src/app/play/page.tsx
+          git commit -m 'perf: reduce player bundle and remember healthy source' || true
+          git rm .github/workflows/optimize-player-learning.yml
+          git commit -m 'chore: remove player optimization workflow'
+          git push
