@@ -1,0 +1,362 @@
+from pathlib import Path
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    if old not in text:
+        raise SystemExit(f"missing patch target: {label}")
+    if text.count(old) != 1:
+        raise SystemExit(f"patch target not unique ({text.count(old)}): {label}")
+    return text.replace(old, new, 1)
+
+
+play_path = Path("src/app/play/page.tsx")
+text = play_path.read_text()
+
+text = replace_once(
+    text,
+    """    const survivingSources = pingResults
+        .filter(result => result.ping < PING_THRESHOLD)
+        .sort((a, b) => a.ping - b.ping)
+        .map(result => result.source);
+""",
+    """    // 深度测速会读取实际视频分片。片源很多时全部测速会抢占首播带宽，
+    // 所以只对 Ping 最快的少量候选做完整测速。
+    const MAX_FULL_TEST_SOURCES = 6;
+    const survivingSources = pingResults
+        .filter(result => result.ping < PING_THRESHOLD)
+        .sort((a, b) => a.ping - b.ping)
+        .slice(0, MAX_FULL_TEST_SOURCES)
+        .map(result => result.source);
+""",
+    "limit full source tests",
+)
+
+text = replace_once(
+    text,
+    """    const fetchSourcesData = async (query: string): Promise<SearchResult[]> => {
+      // 根据搜索词获取全部源信息
+      try {
+        const response = await fetch(
+          `/api/search?q=${encodeURIComponent(query.trim())}`
+        );
+        if (!response.ok) {
+          throw new Error('搜索失败');
+        }
+        const data = await response.json();
+
+        // 处理搜索结果，根据规则过滤
+        const results = data.results.filter(
+          (result: SearchResult) =>
+            result.title.replaceAll(' ', '').toLowerCase() ===
+              videoTitleRef.current.replaceAll(' ', '').toLowerCase() &&
+            (videoYearRef.current
+              ? result.year.toLowerCase() === videoYearRef.current.toLowerCase()
+              : true) &&
+            (searchType
+              ? (searchType === 'tv' && result.episodes.length > 1) ||
+                (searchType === 'movie' && result.episodes.length === 1)
+              : true)
+        );
+        setAvailableSources(results);
+        return results;
+      } catch (err) {
+        setSourceSearchError(err instanceof Error ? err.message : '搜索失败');
+        setAvailableSources([]);
+        return [];
+      } finally {
+        setSourceSearchLoading(false);
+      }
+    };
+""",
+    """    const fetchSourcesData = async (
+      query: string,
+      matchTitle = videoTitleRef.current,
+      matchYear = videoYearRef.current,
+      updateState = true
+    ): Promise<SearchResult[]> => {
+      // 根据搜索词获取全部源信息
+      try {
+        const response = await fetch(
+          `/api/search?q=${encodeURIComponent(query.trim())}`
+        );
+        if (!response.ok) {
+          throw new Error('搜索失败');
+        }
+        const data = await response.json();
+
+        // 处理搜索结果，根据规则过滤
+        const results = data.results.filter(
+          (result: SearchResult) =>
+            result.title.replaceAll(' ', '').toLowerCase() ===
+              matchTitle.replaceAll(' ', '').toLowerCase() &&
+            (matchYear
+              ? result.year.toLowerCase() === matchYear.toLowerCase()
+              : true) &&
+            (searchType
+              ? (searchType === 'tv' && result.episodes.length > 1) ||
+                (searchType === 'movie' && result.episodes.length === 1)
+              : true)
+        );
+        if (updateState) setAvailableSources(results);
+        return results;
+      } catch (err) {
+        setSourceSearchError(err instanceof Error ? err.message : '搜索失败');
+        if (updateState) setAvailableSources([]);
+        return [];
+      } finally {
+        if (updateState) setSourceSearchLoading(false);
+      }
+    };
+""",
+    "parameterize source search",
+)
+
+text = replace_once(
+    text,
+    """      let sourcesInfo = await fetchSourcesData(searchTitle || videoTitle);
+      if (
+        currentSource &&
+        currentId &&
+        !sourcesInfo.some(
+          (source) => source.source === currentSource && source.id === currentId
+        )
+      ) {
+        sourcesInfo = await fetchSourceDetail(currentSource, currentId);
+      }
+""",
+    """      const directSourceMode = Boolean(
+        currentSource && currentId && !needPreferRef.current
+      );
+      let sourcesInfo: SearchResult[] = [];
+
+      if (directSourceMode && currentSource && currentId) {
+        // “继续观看 / 收藏直达”已有精确 source + id 时直接取详情，
+        // 不再先等待全片源搜索，尽快开始首播。
+        sourcesInfo = await fetchSourceDetail(currentSource, currentId);
+
+        if (sourcesInfo.length > 0) {
+          const directDetail = sourcesInfo[0];
+          // 首播后再补齐备用线路，避免全片源请求与首批视频分片抢带宽。
+          window.setTimeout(() => {
+            void fetchSourcesData(
+              searchTitle || directDetail.title,
+              directDetail.title,
+              directDetail.year,
+              false
+            ).then((backgroundSources) => {
+              if (backgroundSources.length === 0) return;
+              const merged = [
+                directDetail,
+                ...backgroundSources.filter(
+                  (source) =>
+                    !(
+                      source.source === directDetail.source &&
+                      source.id === directDetail.id
+                    )
+                ),
+              ];
+              setAvailableSources(merged);
+            });
+          }, 1500);
+        } else {
+          // 精确详情失效时再回退到全片源搜索。
+          sourcesInfo = await fetchSourcesData(searchTitle || videoTitle);
+        }
+      } else {
+        sourcesInfo = await fetchSourcesData(searchTitle || videoTitle);
+        if (
+          currentSource &&
+          currentId &&
+          !sourcesInfo.some(
+            (source) => source.source === currentSource && source.id === currentId
+          )
+        ) {
+          const exactSource = await fetchSourceDetail(currentSource, currentId);
+          if (exactSource.length > 0) {
+            sourcesInfo = [
+              ...exactSource,
+              ...sourcesInfo.filter(
+                (source) =>
+                  !(
+                    source.source === exactSource[0].source &&
+                    source.id === exactSource[0].id
+                  )
+              ),
+            ];
+          }
+        }
+      }
+""",
+    "direct source startup path",
+)
+
+text = replace_once(
+    text,
+    """      // 短暂延迟让用户看到完成状态
+      setTimeout(() => {
+        setLoading(false);
+      }, 1000);
+""",
+    """      // 数据已齐后立即进入播放器，不人为增加 1 秒等待。
+      setLoading(false);
+""",
+    "remove artificial loading delay",
+)
+
+text = replace_once(
+    text,
+    """      // 清除前一个历史记录
+      if (currentSourceRef.current && currentIdRef.current) {
+        try {
+          await deletePlayRecord(
+            currentSourceRef.current,
+            currentIdRef.current
+          );
+          console.log('已清除前一个播放记录');
+        } catch (err) {
+          console.error('清除播放记录失败:', err);
+        }
+      }
+
+      // 清除并设置下一个跳过片头片尾配置
+      if (currentSourceRef.current && currentIdRef.current) {
+        try {
+          await deleteSkipConfig(
+            currentSourceRef.current,
+            currentIdRef.current
+          );
+          await saveSkipConfig(newSource, newId, skipConfigRef.current);
+        } catch (err) {
+          console.error('清除跳过片头片尾配置失败:', err);
+        }
+      }
+
+""",
+    """      // 换源不能被播放记录/跳过配置的远程写入阻塞。
+      // 先记住旧源，视频切换完成后再后台同步这些状态。
+      const previousSource = currentSourceRef.current;
+      const previousId = currentIdRef.current;
+
+""",
+    "remove blocking database work from source switch",
+)
+
+text = replace_once(
+    text,
+    """      setCurrentSource(newSource);
+      setCurrentId(newId);
+      setDetail(newDetail);
+      setCurrentEpisodeIndex(targetIndex);
+""",
+    """      setCurrentSource(newSource);
+      setCurrentId(newId);
+      setDetail(newDetail);
+      setCurrentEpisodeIndex(targetIndex);
+
+      if (
+        previousSource &&
+        previousId &&
+        (previousSource !== newSource || previousId !== newId)
+      ) {
+        void Promise.allSettled([
+          deletePlayRecord(previousSource, previousId),
+          deleteSkipConfig(previousSource, previousId),
+          saveSkipConfig(newSource, newId, skipConfigRef.current),
+        ]).then((results) => {
+          if (results.some((result) => result.status === 'rejected')) {
+            console.warn('换源后的后台状态同步有部分失败');
+          }
+        });
+      }
+""",
+    "background source-switch persistence",
+)
+
+text = replace_once(
+    text,
+    """        if (process.env.NEXT_PUBLIC_STORAGE_TYPE === 'upstash') {
+          interval = 20000;
+        }
+""",
+    """        if (process.env.NEXT_PUBLIC_STORAGE_TYPE === 'upstash') {
+          interval = 30000;
+        }
+""",
+    "reduce play-record write frequency",
+)
+
+text = replace_once(
+    text,
+    """      artPlayerRef.current.on('pause', () => {
+        saveCurrentPlayProgress();
+      });
+
+      if (artPlayerRef.current?.video) {
+""",
+    """      if (artPlayerRef.current?.video) {
+""",
+    "remove duplicate pause save listener",
+)
+
+play_path.write_text(text)
+
+upstash_path = Path("src/lib/upstash.db.ts")
+text = upstash_path.read_text()
+
+text = replace_once(
+    text,
+    """    const result: Record<string, PlayRecord> = {};
+    for (const fullKey of keys) {
+      const value = await withRetry(() => this.client.get(fullKey));
+      if (value) {
+        // 截取 source+id 部分
+        const keyPart = ensureString(fullKey.replace(`u:${userName}:pr:`, ''));
+        result[keyPart] = value as PlayRecord;
+      }
+    }
+    return result;
+""",
+    """    // 批量读取，避免播放记录越多就产生越多次 Upstash REST 往返。
+    const values = await withRetry(() => this.client.mget(keys));
+    const result: Record<string, PlayRecord> = {};
+    keys.forEach((fullKey, index) => {
+      const value = values[index];
+      if (value) {
+        // 截取 source+id 部分
+        const keyPart = ensureString(fullKey.replace(`u:${userName}:pr:`, ''));
+        result[keyPart] = value as PlayRecord;
+      }
+    });
+    return result;
+""",
+    "batch play-record reads",
+)
+
+text = replace_once(
+    text,
+    """    const result: Record<string, Favorite> = {};
+    for (const fullKey of keys) {
+      const value = await withRetry(() => this.client.get(fullKey));
+      if (value) {
+        const keyPart = ensureString(fullKey.replace(`u:${userName}:fav:`, ''));
+        result[keyPart] = value as Favorite;
+      }
+    }
+    return result;
+""",
+    """    // 收藏同样用 MGET 批量读取，避免 N+1 REST 请求。
+    const values = await withRetry(() => this.client.mget(keys));
+    const result: Record<string, Favorite> = {};
+    keys.forEach((fullKey, index) => {
+      const value = values[index];
+      if (value) {
+        const keyPart = ensureString(fullKey.replace(`u:${userName}:fav:`, ''));
+        result[keyPart] = value as Favorite;
+      }
+    });
+    return result;
+""",
+    "batch favorite reads",
+)
+
+upstash_path.write_text(text)
