@@ -26,6 +26,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Patch
         run: python scripts/optimize_playback_storage.py
+      - name: Generate runtime
+        run: pnpm gen:runtime
       - name: Typecheck
         run: pnpm typecheck
       - name: Commit
