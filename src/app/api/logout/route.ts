@@ -2,16 +2,25 @@ import { NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
+const COOKIE_SECURE = process.env.NODE_ENV === 'production';
+
 export async function POST() {
   const response = NextResponse.json({ ok: true });
 
-  // 清除认证cookie
   response.cookies.set('auth', '', {
     path: '/',
     expires: new Date(0),
-    sameSite: 'lax', // 改为 lax 以支持 PWA
-    httpOnly: false, // PWA 需要客户端可访问
-    secure: false, // 根据协议自动设置
+    sameSite: 'lax',
+    httpOnly: true,
+    secure: COOKIE_SECURE,
+  });
+
+  response.cookies.set('auth_meta', '', {
+    path: '/',
+    expires: new Date(0),
+    sameSite: 'lax',
+    httpOnly: false,
+    secure: COOKIE_SECURE,
   });
 
   return response;
