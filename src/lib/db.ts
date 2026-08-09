@@ -16,7 +16,7 @@ const STORAGE_TYPE =
     | 'upstash'
     | undefined) || 'localstorage';
 
-function createStorage(): IStorage {
+function createRawStorage(): IStorage {
   switch (STORAGE_TYPE) {
     case 'redis':
       return new RedisStorage();
@@ -28,11 +28,74 @@ function createStorage(): IStorage {
   }
 }
 
+/**
+ * Wrap database-backed storage so every caller — including admin APIs that
+ * access getStorage() directly — receives the same password protection.
+ */
+function secureStorage(rawStorage: IStorage): IStorage {
+  if (!rawStorage) return rawStorage;
+
+  return new Proxy(rawStorage as any, {
+    get(target, property) {
+      if (property === 'registerUser') {
+        return async (userName: string, password: string) => {
+          const encoded = await encodeUserPassword(userName, password);
+          return target.registerUser(userName, encoded);
+        };
+      }
+
+      if (property === 'changePassword') {
+        return async (userName: string, newPassword: string) => {
+          const encoded = await encodeUserPassword(userName, newPassword);
+          return target.changePassword(userName, encoded);
+        };
+      }
+
+      if (property === 'verifyUser') {
+        return async (userName: string, password: string) => {
+          const encoded = await encodeUserPassword(userName, password);
+
+          // New and already migrated users.
+          if (await target.verifyUser(userName, encoded)) {
+            return true;
+          }
+
+          // An encoded database credential must never be accepted as a client
+          // password. This prevents pass-the-hash authentication.
+          if (isEncodedUserPassword(password)) {
+            return false;
+          }
+
+          // Legacy compatibility: older JoyFlix versions stored plaintext.
+          // On the first successful legacy login, upgrade the value in place.
+          const legacyMatch = await target.verifyUser(userName, password);
+          if (!legacyMatch) return false;
+
+          if (typeof target.changePassword === 'function') {
+            try {
+              await target.changePassword(userName, encoded);
+            } catch (error) {
+              // Do not lock a valid legacy user out if the migration write
+              // temporarily fails. A later login can retry the migration.
+              console.warn(`用户密码哈希迁移失败 (${userName}):`, error);
+            }
+          }
+
+          return true;
+        };
+      }
+
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as IStorage;
+}
+
 let storageInstance: IStorage | null = null;
 
 export function getStorage(): IStorage {
   if (!storageInstance) {
-    storageInstance = createStorage();
+    storageInstance = secureStorage(createRawStorage());
   }
   return storageInstance;
 }
@@ -125,52 +188,19 @@ export class DbManager {
     return favorite !== null;
   }
 
-  // ---------- 用户相关 ----------
   async registerUser(userName: string, password: string): Promise<void> {
-    const encodedPassword = await encodeUserPassword(userName, password);
-    await this.storage.registerUser(userName, encodedPassword);
+    await this.storage.registerUser(userName, password);
   }
 
   async verifyUser(userName: string, password: string): Promise<boolean> {
-    const encodedPassword = await encodeUserPassword(userName, password);
-
-    // New and already-migrated accounts.
-    if (await this.storage.verifyUser(userName, encodedPassword)) {
-      return true;
-    }
-
-    // Never treat an encoded database credential supplied by a client as a
-    // legacy plaintext password. This prevents pass-the-hash authentication.
-    if (isEncodedUserPassword(password)) {
-      return false;
-    }
-
-    // Backward compatibility: old deployments stored the password as plain
-    // text. Allow one successful legacy login and immediately upgrade it.
-    const legacyMatch = await this.storage.verifyUser(userName, password);
-    if (!legacyMatch) {
-      return false;
-    }
-
-    if (typeof this.storage.changePassword === 'function') {
-      try {
-        await this.storage.changePassword(userName, encodedPassword);
-      } catch (error) {
-        // Authentication succeeded with the legacy value. Do not lock the user
-        // out just because the best-effort migration write failed.
-        console.warn(`用户密码哈希迁移失败 (${userName}):`, error);
-      }
-    }
-
-    return true;
+    return this.storage.verifyUser(userName, password);
   }
 
   async changePassword(userName: string, newPassword: string): Promise<void> {
     if (typeof this.storage.changePassword !== 'function') {
       throw new Error('存储服务不支持修改密码');
     }
-    const encodedPassword = await encodeUserPassword(userName, newPassword);
-    await this.storage.changePassword(userName, encodedPassword);
+    await this.storage.changePassword(userName, newPassword);
   }
 
   async checkUserExist(userName: string): Promise<boolean> {
