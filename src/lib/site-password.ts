@@ -64,5 +64,7 @@ export async function verifySitePassword(password: string): Promise<boolean> {
 }
 
 export function getAuthSigningSecret(): string {
-  return process.env.PASSWORD || FALLBACK_PASSWORD_HASH;
+  // AUTH_SECRET lets session signing stay independent from the login password.
+  // PASSWORD remains a compatibility fallback for existing deployments.
+  return process.env.AUTH_SECRET || process.env.PASSWORD || FALLBACK_PASSWORD_HASH;
 }
