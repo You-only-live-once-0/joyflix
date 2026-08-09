@@ -1,5 +1,5 @@
 const PASSWORD_PREFIX = 'joyflix-pbkdf2-sha256-v1';
-const PASSWORD_ITERATIONS = 210_000;
+const PASSWORD_ITERATIONS = 600_000;
 
 function toHex(buffer: ArrayBuffer): string {
   return Array.from(new Uint8Array(buffer))
@@ -36,7 +36,7 @@ export async function encodeUserPassword(
     {
       name: 'PBKDF2',
       hash: 'SHA-256',
-      salt: encoder.encode(`joyflix:user:${username}`),
+      salt: encoder.encode(`joyflix:v1:user:${username}`),
       iterations: PASSWORD_ITERATIONS,
     },
     keyMaterial,
