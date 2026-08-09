@@ -10,6 +10,18 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSite } from '@/components/SiteProvider';
 import { ThemeProvider } from '@/components/ThemeProvider';
 
+function getSafeRedirect(rawRedirect: string | null): string {
+  if (!rawRedirect || typeof window === 'undefined') return '/';
+
+  try {
+    const target = new URL(rawRedirect, window.location.origin);
+    if (target.origin !== window.location.origin) return '/';
+    return `${target.pathname}${target.search}${target.hash}` || '/';
+  } catch {
+    return '/';
+  }
+}
+
 function LoginPageClient() {
   const { setTheme } = useTheme();
   const router = useRouter();
@@ -31,7 +43,6 @@ function LoginPageClient() {
         setRememberMe(true);
       }
 
-      // Remove plaintext passwords saved by older versions.
       localStorage.removeItem('rememberedPassword');
 
       const storageType = (window as any).RUNTIME_CONFIG?.STORAGE_TYPE;
@@ -63,11 +74,8 @@ function LoginPageClient() {
           localStorage.removeItem('rememberedUsername');
         }
 
-        // The password is intentionally never persisted in browser storage.
         localStorage.removeItem('rememberedPassword');
-
-        const redirect = searchParams.get('redirect') || '/';
-        router.replace(redirect);
+        router.replace(getSafeRedirect(searchParams.get('redirect')));
       } else if (res.status === 401) {
         setError('密码错误');
       } else {
@@ -93,6 +101,7 @@ function LoginPageClient() {
               id='username'
               type='text'
               autoComplete='username'
+              maxLength={128}
               className='block w-full rounded-md border border-gray-400 bg-transparent py-3 px-4 text-white focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-white sm:text-base'
               placeholder='用户名'
               value={username}
@@ -106,6 +115,7 @@ function LoginPageClient() {
             id='password'
             type={showPassword ? 'text' : 'password'}
             autoComplete='current-password'
+            maxLength={256}
             className='block w-full rounded-md border border-gray-400 bg-transparent py-3 px-4 text-white focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-white sm:text-base'
             placeholder='密码'
             value={password}
