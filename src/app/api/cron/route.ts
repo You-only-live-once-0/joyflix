@@ -9,17 +9,38 @@ import { SearchResult } from '@/lib/types';
 export const runtime = 'edge';
 
 export async function GET(request: NextRequest) {
-  console.log(request.url);
+  const cronSecret = process.env.CRON_SECRET;
+  const authorization = request.headers.get('authorization');
+
+  if (!cronSecret) {
+    console.error('Cron job rejected: CRON_SECRET is not configured');
+    return NextResponse.json(
+      { success: false, message: 'Cron is not configured' },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } }
+    );
+  }
+
+  if (authorization !== `Bearer ${cronSecret}`) {
+    return NextResponse.json(
+      { success: false, message: 'Unauthorized' },
+      { status: 401, headers: { 'Cache-Control': 'no-store' } }
+    );
+  }
+
   try {
     console.log('Cron job triggered:', new Date().toISOString());
 
-    refreshRecordAndFavorites();
+    // Await the work so the Edge function cannot finish before the refresh task.
+    await refreshRecordAndFavorites();
 
-    return NextResponse.json({
-      success: true,
-      message: 'Cron job executed successfully',
-      timestamp: new Date().toISOString(),
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Cron job executed successfully',
+        timestamp: new Date().toISOString(),
+      },
+      { headers: { 'Cache-Control': 'no-store' } }
+    );
   } catch (error) {
     console.error('Cron job failed:', error);
 
@@ -30,7 +51,7 @@ export async function GET(request: NextRequest) {
         error: error instanceof Error ? error.message : 'Unknown error',
         timestamp: new Date().toISOString(),
       },
-      { status: 500 }
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
     );
   }
 }
@@ -66,7 +87,6 @@ async function refreshRecordAndFavorites() {
           fallbackTitle: fallbackTitle.trim(),
         })
           .then((detail) => {
-            // 成功时才缓存结果
             const successPromise = Promise.resolve(detail);
             detailCache.set(key, successPromise);
             return detail;
@@ -82,7 +102,6 @@ async function refreshRecordAndFavorites() {
     for (const user of users) {
       console.log(`开始处理用户: ${user}`);
 
-      // 播放记录
       try {
         const playRecords = await db.getAllPlayRecords(user);
         const totalRecords = Object.keys(playRecords).length;
@@ -124,7 +143,6 @@ async function refreshRecordAndFavorites() {
             processedRecords++;
           } catch (err) {
             console.error(`处理播放记录失败 (${key}):`, err);
-            // 继续处理下一个记录
           }
         }
 
@@ -133,7 +151,6 @@ async function refreshRecordAndFavorites() {
         console.error(`获取用户播放记录失败 (${user}):`, err);
       }
 
-      // 收藏
       try {
         const favorites = await db.getAllFavorites(user);
         const totalFavorites = Object.keys(favorites).length;
@@ -172,7 +189,6 @@ async function refreshRecordAndFavorites() {
             processedFavorites++;
           } catch (err) {
             console.error(`处理收藏失败 (${key}):`, err);
-            // 继续处理下一个收藏
           }
         }
 
@@ -185,5 +201,6 @@ async function refreshRecordAndFavorites() {
     console.log('刷新播放记录/收藏任务完成');
   } catch (err) {
     console.error('刷新播放记录/收藏任务启动失败', err);
+    throw err;
   }
 }

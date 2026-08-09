@@ -1,13 +1,7 @@
-/* eslint-disable no-console */
-
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getAuthInfoFromCookie } from '@/lib/auth';
-import {
-  getAuthSigningSecret,
-  hasSitePassword,
-  verifySitePassword,
-} from '@/lib/site-password';
+import { getAuthInfoFromCookie, verifyAuthInfo } from '@/lib/auth';
+import { getAuthSigningSecret, hasSitePassword } from '@/lib/site-password';
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -24,70 +18,27 @@ export async function middleware(request: NextRequest) {
   }
 
   const authInfo = getAuthInfoFromCookie(request);
-
   if (!authInfo) {
     return handleAuthFailure(request, pathname);
   }
 
+  const validSession = await verifyAuthInfo(authInfo, getAuthSigningSecret());
+  if (!validSession) {
+    return handleAuthFailure(request, pathname);
+  }
+
   if (storageType === 'localstorage') {
-    if (
-      !authInfo.password ||
-      !(await verifySitePassword(authInfo.password))
-    ) {
+    if (authInfo.username !== '__local__' || authInfo.role !== 'user') {
       return handleAuthFailure(request, pathname);
     }
     return NextResponse.next();
   }
 
-  if (!authInfo.username || !authInfo.signature) {
+  if (!authInfo.username || authInfo.username === '__local__') {
     return handleAuthFailure(request, pathname);
   }
 
-  const isValidSignature = await verifySignature(
-    authInfo.username,
-    authInfo.signature,
-    getAuthSigningSecret()
-  );
-
-  if (isValidSignature) {
-    return NextResponse.next();
-  }
-
-  return handleAuthFailure(request, pathname);
-}
-
-async function verifySignature(
-  data: string,
-  signature: string,
-  secret: string
-): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-
-  try {
-    const key = await crypto.subtle.importKey(
-      'raw',
-      keyData,
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-
-    const signatureBuffer = new Uint8Array(
-      signature.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []
-    );
-
-    return await crypto.subtle.verify(
-      'HMAC',
-      key,
-      signatureBuffer,
-      messageData
-    );
-  } catch (error) {
-    console.error('签名验证失败:', error);
-    return false;
-  }
+  return NextResponse.next();
 }
 
 function handleAuthFailure(

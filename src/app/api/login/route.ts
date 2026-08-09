@@ -1,6 +1,7 @@
-/* eslint-disable no-console,@typescript-eslint/no-explicit-any */
+/* eslint-disable no-console */
 import { NextRequest, NextResponse } from 'next/server';
 
+import { createAuthInfo, encodeAuthInfo, type AuthRole } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import {
@@ -17,69 +18,93 @@ const STORAGE_TYPE =
     | 'redis'
     | 'upstash'
     | undefined) || 'localstorage';
+const MAX_USERNAME_LENGTH = 128;
+const MAX_PASSWORD_LENGTH = 256;
 
-async function generateSignature(
-  data: string,
-  secret: string
-): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-  return Array.from(new Uint8Array(signature))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
+function isSecureRequest(request: NextRequest): boolean {
+  const forwardedProto = request.headers.get('x-forwarded-proto');
+  return forwardedProto === 'https' || request.nextUrl.protocol === 'https:';
 }
 
-async function generateAuthCookie(
-  username?: string,
-  password?: string,
-  role?: 'owner' | 'admin' | 'user',
-  includePassword = false
-): Promise<string> {
-  const authData: any = { role: role || 'user' };
+function clearAuthCookies(response: NextResponse, secure: boolean) {
+  response.cookies.set('auth', '', {
+    path: '/',
+    expires: new Date(0),
+    sameSite: 'lax',
+    httpOnly: true,
+    secure,
+  });
+  response.cookies.set('auth_meta', '', {
+    path: '/',
+    expires: new Date(0),
+    sameSite: 'lax',
+    httpOnly: false,
+    secure,
+  });
+}
 
-  if (includePassword && password) {
-    authData.password = password;
-  }
+async function setAuthCookies(
+  response: NextResponse,
+  username: string,
+  role: AuthRole,
+  secure: boolean,
+  exposeUsername = true
+) {
+  const authInfo = await createAuthInfo(
+    username,
+    role,
+    getAuthSigningSecret()
+  );
+  const expires = new Date(authInfo.expiresAt || Date.now());
 
-  if (username) {
-    authData.username = username;
-    authData.signature = await generateSignature(
-      username,
-      getAuthSigningSecret()
-    );
-    authData.timestamp = Date.now();
-  }
+  response.cookies.set('auth', encodeAuthInfo(authInfo), {
+    path: '/',
+    expires,
+    sameSite: 'lax',
+    httpOnly: true,
+    secure,
+  });
 
-  return encodeURIComponent(JSON.stringify(authData));
+  response.cookies.set(
+    'auth_meta',
+    encodeURIComponent(
+      JSON.stringify({
+        username: exposeUsername ? username : undefined,
+        role,
+      })
+    ),
+    {
+      path: '/',
+      expires,
+      sameSite: 'lax',
+      httpOnly: false,
+      secure,
+    }
+  );
+}
+
+function validatePassword(password: unknown): password is string {
+  return (
+    typeof password === 'string' &&
+    password.length > 0 &&
+    password.length <= MAX_PASSWORD_LENGTH
+  );
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const secure = isSecureRequest(req);
+
     if (STORAGE_TYPE === 'localstorage') {
       if (!hasSitePassword()) {
         const response = NextResponse.json({ ok: true });
-        response.cookies.set('auth', '', {
-          path: '/',
-          expires: new Date(0),
-          sameSite: 'lax',
-          httpOnly: false,
-          secure: false,
-        });
+        clearAuthCookies(response, secure);
         return response;
       }
 
       const { password } = await req.json();
-      if (typeof password !== 'string') {
-        return NextResponse.json({ error: '密码不能为空' }, { status: 400 });
+      if (!validatePassword(password)) {
+        return NextResponse.json({ error: '密码格式无效' }, { status: 400 });
       }
 
       if (!(await verifySitePassword(password))) {
@@ -90,58 +115,27 @@ export async function POST(req: NextRequest) {
       }
 
       const response = NextResponse.json({ ok: true });
-      const cookieValue = await generateAuthCookie(
-        undefined,
-        password,
-        'user',
-        true
-      );
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7);
-
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax',
-        httpOnly: false,
-        secure: false,
-      });
-
+      await setAuthCookies(response, '__local__', 'user', secure, false);
       return response;
     }
 
     const { username, password } = await req.json();
 
-    if (!username || typeof username !== 'string') {
-      return NextResponse.json({ error: '用户名不能为空' }, { status: 400 });
+    if (
+      !username ||
+      typeof username !== 'string' ||
+      username.length > MAX_USERNAME_LENGTH
+    ) {
+      return NextResponse.json({ error: '用户名格式无效' }, { status: 400 });
     }
-    if (!password || typeof password !== 'string') {
-      return NextResponse.json({ error: '密码不能为空' }, { status: 400 });
+    if (!validatePassword(password)) {
+      return NextResponse.json({ error: '密码格式无效' }, { status: 400 });
     }
 
     const ownerUsername = process.env.USERNAME || 'admin';
-    if (
-      username === ownerUsername &&
-      (await verifySitePassword(password))
-    ) {
+    if (username === ownerUsername && (await verifySitePassword(password))) {
       const response = NextResponse.json({ ok: true });
-      const cookieValue = await generateAuthCookie(
-        username,
-        password,
-        'owner',
-        false
-      );
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7);
-
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax',
-        httpOnly: false,
-        secure: false,
-      });
-
+      await setAuthCookies(response, username, 'owner', secure);
       return response;
     } else if (username === ownerUsername) {
       return NextResponse.json({ error: '用户名或密码错误' }, { status: 401 });
@@ -163,23 +157,7 @@ export async function POST(req: NextRequest) {
       }
 
       const response = NextResponse.json({ ok: true });
-      const cookieValue = await generateAuthCookie(
-        username,
-        password,
-        user?.role || 'user',
-        false
-      );
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7);
-
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax',
-        httpOnly: false,
-        secure: false,
-      });
-
+      await setAuthCookies(response, username, user?.role || 'user', secure);
       return response;
     } catch (error) {
       console.error('数据库验证失败', error);

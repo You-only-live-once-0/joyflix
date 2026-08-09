@@ -1,17 +1,30 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
-export async function POST() {
-  const response = NextResponse.json({ ok: true });
+function isSecureRequest(request: NextRequest): boolean {
+  const forwardedProto = request.headers.get('x-forwarded-proto');
+  return forwardedProto === 'https' || request.nextUrl.protocol === 'https:';
+}
 
-  // 清除认证cookie
+export async function POST(request: NextRequest) {
+  const response = NextResponse.json({ ok: true });
+  const secure = isSecureRequest(request);
+
   response.cookies.set('auth', '', {
     path: '/',
     expires: new Date(0),
-    sameSite: 'lax', // 改为 lax 以支持 PWA
-    httpOnly: false, // PWA 需要客户端可访问
-    secure: false, // 根据协议自动设置
+    sameSite: 'lax',
+    httpOnly: true,
+    secure,
+  });
+
+  response.cookies.set('auth_meta', '', {
+    path: '/',
+    expires: new Date(0),
+    sameSite: 'lax',
+    httpOnly: false,
+    secure,
   });
 
   return response;

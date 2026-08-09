@@ -5,25 +5,29 @@ import { NextResponse } from 'next/server';
 import { getCacheTime, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 
-
 export const runtime = 'nodejs';
+
+function buildCacheHeaders(cacheTime: number) {
+  const staleTime = Math.max(cacheTime, 300);
+  const edgeValue = `public, s-maxage=${cacheTime}, stale-while-revalidate=${staleTime}, stale-if-error=3600`;
+
+  return {
+    'Cache-Control': `public, max-age=${cacheTime}, ${edgeValue.replace('public, ', '')}`,
+    'CDN-Cache-Control': edgeValue,
+    'Vercel-CDN-Cache-Control': edgeValue,
+    'Netlify-Vary': 'query',
+  };
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const query = searchParams.get('q');
+  const query = searchParams.get('q')?.trim().slice(0, 120) || '';
+  const cacheTime = await getCacheTime();
 
   if (!query) {
-    const cacheTime = await getCacheTime();
     return NextResponse.json(
       { results: [] },
-      {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Netlify-Vary': 'query',
-        },
-      }
+      { headers: buildCacheHeaders(cacheTime) }
     );
   }
 
@@ -36,40 +40,35 @@ export async function GET(request: Request) {
       return true;
     }
   );
-  // 添加超时控制和错误处理，避免慢接口拖累整体响应
+
+  // searchFromApi already aborts normal sources after 8s; public-media
+  // adapters also have their own timeout. Avoid an extra Promise.race timer
+  // for every source so completed searches do not leave redundant timers alive.
   const searchPromises = apiSites.map((site) =>
-    Promise.race([
-      searchFromApi(site, query),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`${site.name} timeout`)), 10000)
-      ),
-    ]).catch((err) => {
-      console.warn(`搜索失败 ${site.name}:`, err.message);
-      return []; // 返回空数组而不是抛出错误
+    searchFromApi(site, query).catch((error) => {
+      console.warn(`搜索失败 ${site.name}:`, error);
+      return [];
     })
   );
 
   try {
     const results = await Promise.allSettled(searchPromises);
-    const successResults = results
-      .filter((result) => result.status === 'fulfilled')
-      .map((result) => (result as PromiseFulfilledResult<any>).value);
-    let flattenedResults = successResults.flat();
-    
-    const cacheTime = await getCacheTime();
+    const flattenedResults = results
+      .filter(
+        (result): result is PromiseFulfilledResult<any[]> =>
+          result.status === 'fulfilled'
+      )
+      .flatMap((result) => result.value);
 
     return NextResponse.json(
       { results: flattenedResults },
-      {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Netlify-Vary': 'query',
-        },
-      }
+      { headers: buildCacheHeaders(cacheTime) }
     );
   } catch (error) {
-    return NextResponse.json({ error: '搜索失败' }, { status: 500 });
+    console.error('搜索失败:', error);
+    return NextResponse.json(
+      { error: '搜索失败' },
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
+    );
   }
 }

@@ -3,20 +3,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getStorage } from '@/lib/db';
-import { IStorage } from '@/lib/types';
+import { db } from '@/lib/db';
 
 export const runtime = 'edge';
 
 export async function POST(request: NextRequest) {
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
 
-  // 不支持 localstorage 模式
   if (storageType === 'localstorage') {
     return NextResponse.json(
-      {
-        error: '不支持本地存储模式修改密码',
-      },
+      { error: '不支持本地存储模式修改密码' },
       { status: 400 }
     );
   }
@@ -25,20 +21,21 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { newPassword } = body;
 
-    // 获取认证信息
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // 验证新密码
     if (!newPassword || typeof newPassword !== 'string') {
       return NextResponse.json({ error: '新密码不得为空' }, { status: 400 });
     }
 
+    if (newPassword.length > 256) {
+      return NextResponse.json({ error: '新密码过长' }, { status: 400 });
+    }
+
     const username = authInfo.username;
 
-    // 不允许超管修改密码（超管用户名等于 process.env.USERNAME）
     if (username === process.env.USERNAME) {
       return NextResponse.json(
         { error: '超管不能通过此接口修改密码' },
@@ -46,19 +43,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 获取存储实例
-    const storage: IStorage | null = getStorage();
-    if (!storage || typeof storage.changePassword !== 'function') {
-      return NextResponse.json(
-        { error: '存储服务不支持修改密码' },
-        { status: 500 }
-      );
-    }
+    await db.changePassword(username, newPassword);
 
-    // 修改密码
-    await storage.changePassword(username, newPassword);
-
-    return NextResponse.json({ ok: true });
+    return NextResponse.json(
+      { ok: true },
+      { headers: { 'Cache-Control': 'no-store' } }
+    );
   } catch (error) {
     console.error('修改密码失败:', error);
     return NextResponse.json(
@@ -66,7 +56,7 @@ export async function POST(request: NextRequest) {
         error: '修改密码失败',
         details: (error as Error).message,
       },
-      { status: 500 }
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
     );
   }
 }

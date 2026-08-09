@@ -64,5 +64,10 @@ export async function verifySitePassword(password: string): Promise<boolean> {
 }
 
 export function getAuthSigningSecret(): string {
-  return process.env.PASSWORD || FALLBACK_PASSWORD_HASH;
+  const passwordMaterial = process.env.PASSWORD || FALLBACK_PASSWORD_HASH;
+  const authSecret = process.env.AUTH_SECRET;
+
+  // Keep signing independent from exposing the login password while still
+  // invalidating all existing sessions whenever PASSWORD changes.
+  return authSecret ? `${authSecret}:${passwordMaterial}` : passwordMaterial;
 }
