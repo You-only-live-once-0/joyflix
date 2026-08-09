@@ -1,6 +1,7 @@
-/* eslint-disable no-console,@typescript-eslint/no-explicit-any */
+/* eslint-disable no-console */
 import { NextRequest, NextResponse } from 'next/server';
 
+import { AuthRole, createAuthInfo, encodeAuthInfo } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import {
@@ -18,48 +19,64 @@ const STORAGE_TYPE =
     | 'upstash'
     | undefined) || 'localstorage';
 
-async function generateSignature(
-  data: string,
-  secret: string
-): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-  return Array.from(new Uint8Array(signature))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
+const COOKIE_SECURE = process.env.NODE_ENV === 'production';
+
+function clearAuthCookies(response: NextResponse) {
+  response.cookies.set('auth', '', {
+    path: '/',
+    expires: new Date(0),
+    sameSite: 'lax',
+    httpOnly: true,
+    secure: COOKIE_SECURE,
+  });
+  response.cookies.set('auth_meta', '', {
+    path: '/',
+    expires: new Date(0),
+    sameSite: 'lax',
+    httpOnly: false,
+    secure: COOKIE_SECURE,
+  });
 }
 
-async function generateAuthCookie(
-  username?: string,
-  password?: string,
-  role?: 'owner' | 'admin' | 'user',
-  includePassword = false
-): Promise<string> {
-  const authData: any = { role: role || 'user' };
+async function setAuthCookies(
+  response: NextResponse,
+  username: string,
+  role: AuthRole,
+  exposeUsername = true
+) {
+  const authInfo = await createAuthInfo(
+    username,
+    role,
+    getAuthSigningSecret()
+  );
+  const expires = new Date(authInfo.expiresAt || Date.now());
 
-  if (includePassword && password) {
-    authData.password = password;
-  }
+  response.cookies.set('auth', encodeAuthInfo(authInfo), {
+    path: '/',
+    expires,
+    sameSite: 'lax',
+    httpOnly: true,
+    secure: COOKIE_SECURE,
+  });
 
-  if (username) {
-    authData.username = username;
-    authData.signature = await generateSignature(
-      username,
-      getAuthSigningSecret()
-    );
-    authData.timestamp = Date.now();
-  }
-
-  return encodeURIComponent(JSON.stringify(authData));
+  // Keep only non-sensitive UI metadata browser-readable. Server permissions
+  // never trust this cookie; authorization always uses the signed HttpOnly one.
+  response.cookies.set(
+    'auth_meta',
+    encodeURIComponent(
+      JSON.stringify({
+        username: exposeUsername ? username : undefined,
+        role,
+      })
+    ),
+    {
+      path: '/',
+      expires,
+      sameSite: 'lax',
+      httpOnly: false,
+      secure: COOKIE_SECURE,
+    }
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -67,13 +84,7 @@ export async function POST(req: NextRequest) {
     if (STORAGE_TYPE === 'localstorage') {
       if (!hasSitePassword()) {
         const response = NextResponse.json({ ok: true });
-        response.cookies.set('auth', '', {
-          path: '/',
-          expires: new Date(0),
-          sameSite: 'lax',
-          httpOnly: false,
-          secure: false,
-        });
+        clearAuthCookies(response);
         return response;
       }
 
@@ -90,23 +101,7 @@ export async function POST(req: NextRequest) {
       }
 
       const response = NextResponse.json({ ok: true });
-      const cookieValue = await generateAuthCookie(
-        undefined,
-        password,
-        'user',
-        true
-      );
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7);
-
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax',
-        httpOnly: false,
-        secure: false,
-      });
-
+      await setAuthCookies(response, '__local__', 'user', false);
       return response;
     }
 
@@ -120,28 +115,9 @@ export async function POST(req: NextRequest) {
     }
 
     const ownerUsername = process.env.USERNAME || 'admin';
-    if (
-      username === ownerUsername &&
-      (await verifySitePassword(password))
-    ) {
+    if (username === ownerUsername && (await verifySitePassword(password))) {
       const response = NextResponse.json({ ok: true });
-      const cookieValue = await generateAuthCookie(
-        username,
-        password,
-        'owner',
-        false
-      );
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7);
-
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax',
-        httpOnly: false,
-        secure: false,
-      });
-
+      await setAuthCookies(response, username, 'owner');
       return response;
     } else if (username === ownerUsername) {
       return NextResponse.json({ error: '用户名或密码错误' }, { status: 401 });
@@ -163,23 +139,7 @@ export async function POST(req: NextRequest) {
       }
 
       const response = NextResponse.json({ ok: true });
-      const cookieValue = await generateAuthCookie(
-        username,
-        password,
-        user?.role || 'user',
-        false
-      );
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7);
-
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax',
-        httpOnly: false,
-        secure: false,
-      });
-
+      await setAuthCookies(response, username, user?.role || 'user');
       return response;
     } catch (error) {
       console.error('数据库验证失败', error);
