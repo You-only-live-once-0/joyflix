@@ -15,16 +15,26 @@ interface DoubanApiResponse {
 
 export const runtime = 'edge';
 
+function buildCacheHeaders(cacheTime: number) {
+  const staleTime = Math.max(cacheTime, 300);
+  const edgeValue = `public, s-maxage=${cacheTime}, stale-while-revalidate=${staleTime}, stale-if-error=86400`;
+
+  return {
+    'Cache-Control': `public, max-age=${cacheTime}, ${edgeValue.replace('public, ', '')}`,
+    'CDN-Cache-Control': edgeValue,
+    'Vercel-CDN-Cache-Control': edgeValue,
+    'Netlify-Vary': 'query',
+  };
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
-  // 获取参数
   const type = searchParams.get('type');
   const tag = searchParams.get('tag');
   const pageSize = parseInt(searchParams.get('pageSize') || '16');
   const pageStart = parseInt(searchParams.get('pageStart') || '0');
 
-  // 验证参数
   if (!type || !tag) {
     return NextResponse.json(
       { error: '缺少必要参数: type 或 tag' },
@@ -60,10 +70,8 @@ export async function GET(request: Request) {
   const target = `https://movie.douban.com/j/search_subjects?type=${type}&tag=${tag}&sort=recommend&page_limit=${pageSize}&page_start=${pageStart}`;
 
   try {
-    // 调用豆瓣 API
     const doubanData = await fetchDoubanData<DoubanApiResponse>(target);
 
-    // 转换数据格式
     const list: DoubanItem[] = doubanData.subjects.map((item) => ({
       id: item.id,
       title: item.title,
@@ -75,30 +83,23 @@ export async function GET(request: Request) {
     const response: DoubanResult = {
       code: 200,
       message: '获取成功',
-      list: list,
+      list,
     };
 
     const cacheTime = await getCacheTime();
     return NextResponse.json(response, {
-      headers: {
-        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-        'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        'Netlify-Vary': 'query',
-      },
+      headers: buildCacheHeaders(cacheTime),
     });
   } catch (error) {
     return NextResponse.json(
       { error: '获取豆瓣数据失败', details: (error as Error).message },
-      { status: 500 }
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
     );
   }
 }
 
 function handleTop250(pageStart: number) {
   const target = `https://movie.douban.com/top250?start=${pageStart}&filter=`;
-
-  // 直接使用 fetch 获取 HTML 页面
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -121,10 +122,7 @@ function handleTop250(pageStart: number) {
         throw new Error(`HTTP error! Status: ${fetchResponse.status}`);
       }
 
-      // 获取 HTML 内容
       const html = await fetchResponse.text();
-
-      // 通过正则同时捕获影片 id、标题、封面以及评分
       const moviePattern =
         /<div class="item">[\s\S]*?<a[^>]+href="https?:\/\/movie\.douban\.com\/subject\/(\d+)\/"[\s\S]*?<img[^>]+alt="([^"]+)"[^>]*src="([^"]+)"[\s\S]*?<span class="rating_num"[^>]*>([^<]*)<\/span>[\s\S]*?<\/div>/g;
       const movies: DoubanItem[] = [];
@@ -135,15 +133,13 @@ function handleTop250(pageStart: number) {
         const title = match[2];
         const cover = match[3];
         const rate = match[4] || '';
-
-        // 处理图片 URL，确保使用 HTTPS
         const processedCover = cover.replace(/^http:/, 'https:');
 
         movies.push({
-          id: id,
-          title: title,
+          id,
+          title,
           poster: processedCover,
-          rate: rate,
+          rate,
           year: '',
         });
       }
@@ -156,12 +152,7 @@ function handleTop250(pageStart: number) {
 
       const cacheTime = await getCacheTime();
       return NextResponse.json(apiResponse, {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Netlify-Vary': 'query',
-        },
+        headers: buildCacheHeaders(cacheTime),
       });
     })
     .catch((error) => {
@@ -171,7 +162,7 @@ function handleTop250(pageStart: number) {
           error: '获取豆瓣 Top250 数据失败',
           details: (error as Error).message,
         },
-        { status: 500 }
+        { status: 500, headers: { 'Cache-Control': 'no-store' } }
       );
     });
 }
