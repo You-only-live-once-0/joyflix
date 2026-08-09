@@ -18,6 +18,8 @@ const STORAGE_TYPE =
     | 'redis'
     | 'upstash'
     | undefined) || 'localstorage';
+const MAX_USERNAME_LENGTH = 128;
+const MAX_PASSWORD_LENGTH = 256;
 
 function isSecureRequest(request: NextRequest): boolean {
   const forwardedProto = request.headers.get('x-forwarded-proto');
@@ -63,8 +65,6 @@ async function setAuthCookies(
     secure,
   });
 
-  // Keep only non-sensitive UI metadata browser-readable. Server permissions
-  // never trust this cookie; authorization always uses the signed HttpOnly one.
   response.cookies.set(
     'auth_meta',
     encodeURIComponent(
@@ -83,6 +83,14 @@ async function setAuthCookies(
   );
 }
 
+function validatePassword(password: unknown): password is string {
+  return (
+    typeof password === 'string' &&
+    password.length > 0 &&
+    password.length <= MAX_PASSWORD_LENGTH
+  );
+}
+
 export async function POST(req: NextRequest) {
   try {
     const secure = isSecureRequest(req);
@@ -95,8 +103,8 @@ export async function POST(req: NextRequest) {
       }
 
       const { password } = await req.json();
-      if (typeof password !== 'string') {
-        return NextResponse.json({ error: '密码不能为空' }, { status: 400 });
+      if (!validatePassword(password)) {
+        return NextResponse.json({ error: '密码格式无效' }, { status: 400 });
       }
 
       if (!(await verifySitePassword(password))) {
@@ -113,11 +121,15 @@ export async function POST(req: NextRequest) {
 
     const { username, password } = await req.json();
 
-    if (!username || typeof username !== 'string') {
-      return NextResponse.json({ error: '用户名不能为空' }, { status: 400 });
+    if (
+      !username ||
+      typeof username !== 'string' ||
+      username.length > MAX_USERNAME_LENGTH
+    ) {
+      return NextResponse.json({ error: '用户名格式无效' }, { status: 400 });
     }
-    if (!password || typeof password !== 'string') {
-      return NextResponse.json({ error: '密码不能为空' }, { status: 400 });
+    if (!validatePassword(password)) {
+      return NextResponse.json({ error: '密码格式无效' }, { status: 400 });
     }
 
     const ownerUsername = process.env.USERNAME || 'admin';
