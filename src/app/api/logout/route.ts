@@ -1,18 +1,22 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
-const COOKIE_SECURE = process.env.NODE_ENV === 'production';
+function isSecureRequest(request: NextRequest): boolean {
+  const forwardedProto = request.headers.get('x-forwarded-proto');
+  return forwardedProto === 'https' || request.nextUrl.protocol === 'https:';
+}
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   const response = NextResponse.json({ ok: true });
+  const secure = isSecureRequest(request);
 
   response.cookies.set('auth', '', {
     path: '/',
     expires: new Date(0),
     sameSite: 'lax',
     httpOnly: true,
-    secure: COOKIE_SECURE,
+    secure,
   });
 
   response.cookies.set('auth_meta', '', {
@@ -20,7 +24,7 @@ export async function POST() {
     expires: new Date(0),
     sameSite: 'lax',
     httpOnly: false,
-    secure: COOKIE_SECURE,
+    secure,
   });
 
   return response;
