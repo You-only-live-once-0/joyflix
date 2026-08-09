@@ -22,17 +22,27 @@ interface DoubanCategoryApiResponse {
 
 export const runtime = 'edge';
 
+function buildCacheHeaders(cacheTime: number) {
+  const staleTime = Math.max(cacheTime, 300);
+  const edgeValue = `public, s-maxage=${cacheTime}, stale-while-revalidate=${staleTime}, stale-if-error=86400`;
+
+  return {
+    'Cache-Control': `public, max-age=${cacheTime}, ${edgeValue.replace('public, ', '')}`,
+    'CDN-Cache-Control': edgeValue,
+    'Vercel-CDN-Cache-Control': edgeValue,
+    'Netlify-Vary': 'query',
+  };
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
-  // 获取参数
   const kind = searchParams.get('kind') || 'movie';
   const category = searchParams.get('category');
   const type = searchParams.get('type');
   const pageLimit = parseInt(searchParams.get('limit') || '20');
   const pageStart = parseInt(searchParams.get('start') || '0');
 
-  // 验证参数
   if (!kind || !category || !type) {
     return NextResponse.json(
       { error: '缺少必要参数: kind 或 category 或 type' },
@@ -64,10 +74,8 @@ export async function GET(request: Request) {
   const target = `https://m.douban.com/rexxar/api/v2/subject/recent_hot/${kind}?start=${pageStart}&limit=${pageLimit}&category=${category}&type=${type}`;
 
   try {
-    // 调用豆瓣 API
     const doubanData = await fetchDoubanData<DoubanCategoryApiResponse>(target);
 
-    // 转换数据格式
     const list: DoubanItem[] = doubanData.items.map((item) => ({
       id: item.id,
       title: item.title,
@@ -79,22 +87,17 @@ export async function GET(request: Request) {
     const response: DoubanResult = {
       code: 200,
       message: '获取成功',
-      list: list,
+      list,
     };
 
     const cacheTime = await getCacheTime();
     return NextResponse.json(response, {
-      headers: {
-        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-        'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        'Netlify-Vary': 'query',
-      },
+      headers: buildCacheHeaders(cacheTime),
     });
   } catch (error) {
     return NextResponse.json(
       { error: '获取豆瓣数据失败', details: (error as Error).message },
-      { status: 500 }
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
     );
   }
 }
