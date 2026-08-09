@@ -1,11 +1,14 @@
 /* eslint-disable no-console, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
 import { AdminConfig } from './admin.types';
+import {
+  encodeUserPassword,
+  isEncodedUserPassword,
+} from './password-storage';
 import { RedisStorage } from './redis.db';
 import { Favorite, IStorage, PlayRecord, SkipConfig } from './types';
 import { UpstashRedisStorage } from './upstash.db';
 
-// storage type 常量: 'localstorage' | 'redis' | 'upstash'，默认 'localstorage'
 const STORAGE_TYPE =
   (process.env.NEXT_PUBLIC_STORAGE_TYPE as
     | 'localstorage'
@@ -13,7 +16,6 @@ const STORAGE_TYPE =
     | 'upstash'
     | undefined) || 'localstorage';
 
-// 创建存储实例
 function createStorage(): IStorage {
   switch (STORAGE_TYPE) {
     case 'redis':
@@ -26,7 +28,6 @@ function createStorage(): IStorage {
   }
 }
 
-// 单例存储实例
 let storageInstance: IStorage | null = null;
 
 export function getStorage(): IStorage {
@@ -36,12 +37,10 @@ export function getStorage(): IStorage {
   return storageInstance;
 }
 
-// 工具函数：生成存储key
 export function generateStorageKey(source: string, id: string): string {
   return `${source}+${id}`;
 }
 
-// 导出便捷方法
 export class DbManager {
   private storage: IStorage;
 
@@ -49,7 +48,6 @@ export class DbManager {
     this.storage = getStorage();
   }
 
-  // 播放记录相关方法
   async getPlayRecord(
     userName: string,
     source: string,
@@ -84,7 +82,6 @@ export class DbManager {
     await this.storage.deletePlayRecord(userName, key);
   }
 
-  // 收藏相关方法
   async getFavorite(
     userName: string,
     source: string,
@@ -130,19 +127,56 @@ export class DbManager {
 
   // ---------- 用户相关 ----------
   async registerUser(userName: string, password: string): Promise<void> {
-    await this.storage.registerUser(userName, password);
+    const encodedPassword = await encodeUserPassword(userName, password);
+    await this.storage.registerUser(userName, encodedPassword);
   }
 
   async verifyUser(userName: string, password: string): Promise<boolean> {
-    return this.storage.verifyUser(userName, password);
+    const encodedPassword = await encodeUserPassword(userName, password);
+
+    // New and already-migrated accounts.
+    if (await this.storage.verifyUser(userName, encodedPassword)) {
+      return true;
+    }
+
+    // Never treat an encoded database credential supplied by a client as a
+    // legacy plaintext password. This prevents pass-the-hash authentication.
+    if (isEncodedUserPassword(password)) {
+      return false;
+    }
+
+    // Backward compatibility: old deployments stored the password as plain
+    // text. Allow one successful legacy login and immediately upgrade it.
+    const legacyMatch = await this.storage.verifyUser(userName, password);
+    if (!legacyMatch) {
+      return false;
+    }
+
+    if (typeof this.storage.changePassword === 'function') {
+      try {
+        await this.storage.changePassword(userName, encodedPassword);
+      } catch (error) {
+        // Authentication succeeded with the legacy value. Do not lock the user
+        // out just because the best-effort migration write failed.
+        console.warn(`用户密码哈希迁移失败 (${userName}):`, error);
+      }
+    }
+
+    return true;
   }
 
-  // 检查用户是否已存在
+  async changePassword(userName: string, newPassword: string): Promise<void> {
+    if (typeof this.storage.changePassword !== 'function') {
+      throw new Error('存储服务不支持修改密码');
+    }
+    const encodedPassword = await encodeUserPassword(userName, newPassword);
+    await this.storage.changePassword(userName, encodedPassword);
+  }
+
   async checkUserExist(userName: string): Promise<boolean> {
     return this.storage.checkUserExist(userName);
   }
 
-  // ---------- 搜索历史 ----------
   async getSearchHistory(userName: string): Promise<string[]> {
     return this.storage.getSearchHistory(userName);
   }
@@ -155,7 +189,6 @@ export class DbManager {
     await this.storage.deleteSearchHistory(userName, keyword);
   }
 
-  // 获取全部用户名
   async getAllUsers(): Promise<string[]> {
     if (typeof (this.storage as any).getAllUsers === 'function') {
       return (this.storage as any).getAllUsers();
@@ -163,7 +196,6 @@ export class DbManager {
     return [];
   }
 
-  // ---------- 管理员配置 ----------
   async getAdminConfig(): Promise<AdminConfig | null> {
     if (typeof (this.storage as any).getAdminConfig === 'function') {
       return (this.storage as any).getAdminConfig();
@@ -177,7 +209,6 @@ export class DbManager {
     }
   }
 
-  // ---------- 跳过片头片尾配置 ----------
   async getSkipConfig(
     userName: string,
     source: string,
@@ -220,5 +251,4 @@ export class DbManager {
   }
 }
 
-// 导出默认实例
 export const db = new DbManager();
