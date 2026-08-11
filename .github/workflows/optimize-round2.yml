@@ -41,13 +41,24 @@ jobs:
       - name: Production build
         run: pnpm build
 
-      - name: Commit verified optimization
+      - name: Commit verified source changes
         shell: bash
         run: |
-          rm scripts/optimize-round2.py
-          rm .github/workflows/optimize-round2.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add \
+            next.config.js \
+            src/lib/site-password.ts \
+            src/lib/config.ts \
+            src/lib/upstash.db.ts \
+            src/lib/db.client.ts \
+            src/lib/downstream.ts \
+            src/app/api/search/route.ts \
+            src/app/api/searchstream/route.ts \
+            src/lib/utils.ts \
+            src/app/play/page.tsx \
+            src/app/api/login/route.ts \
+            src/app/api/logout/route.ts \
+            src/middleware.ts
           git commit --no-verify -m "perf: reduce Redis round trips and harden streaming"
           git push --no-verify
