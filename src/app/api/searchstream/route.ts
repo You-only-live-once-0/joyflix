@@ -6,9 +6,11 @@ import { SearchResult } from '@/lib/types';
 
 export const runtime = 'nodejs';
 
+const SEARCH_CONCURRENCY = 10;
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const query = searchParams.get('q');
+  const query = searchParams.get('q')?.trim();
 
   if (!query) {
     return new Response(JSON.stringify({ results: [] }), {
@@ -17,7 +19,6 @@ export async function GET(request: Request) {
   }
 
   const config = await getConfig();
-  // 同一个 API 地址只请求一次，避免配置别名造成重复出站请求。
   const seenApis = new Set<string>();
   const apiSites = config.SourceConfig.filter((site) => !site.disabled).filter(
     (site) => {
@@ -31,27 +32,35 @@ export async function GET(request: Request) {
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
+      let nextIndex = 0;
 
       const processSite = async (site: (typeof apiSites)[0]) => {
         try {
-          const results: SearchResult[] = await Promise.race([
-            searchFromApi(site, query),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`${site.name} timeout`)), 10000)
-            ),
-          ]);
-
-          if (results && results.length > 0) {
-            const chunk = encoder.encode(JSON.stringify(results) + '\n');
-            controller.enqueue(chunk);
+          const results: SearchResult[] = await searchFromApi(site, query);
+          if (results.length > 0) {
+            controller.enqueue(encoder.encode(JSON.stringify(results) + '\n'));
           }
         } catch (err: any) {
-          console.warn(`搜索失败 ${site.name}:`, err.message);
+          console.warn(`搜索失败 ${site.name}:`, err?.message || err);
         }
       };
 
-      const allPromises = apiSites.map(processSite);
-      await Promise.all(allPromises);
+      // 使用滚动并发池：始终最多 10 个远端请求在途，一个完成就立刻补下一个。
+      // 这样仍能持续流式返回首批结果，同时避免片源增加后几十个请求同时爆发。
+      const worker = async () => {
+        while (true) {
+          const index = nextIndex++;
+          if (index >= apiSites.length) return;
+          await processSite(apiSites[index]);
+        }
+      };
+
+      await Promise.all(
+        Array.from(
+          { length: Math.min(SEARCH_CONCURRENCY, apiSites.length) },
+          () => worker()
+        )
+      );
       controller.close();
     },
   });
