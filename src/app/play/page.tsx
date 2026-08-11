@@ -16,6 +16,13 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { SearchResult } from '@/lib/types';
+import {
+  isSourceCoolingDown,
+  rankSourcesByHealth,
+  recordSourceFailure,
+  recordSourceStall,
+  recordSourceSuccess,
+} from '@/lib/source-health.client';
 import { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';
 
 import EpisodeSelector from '@/components/EpisodeSelector';
@@ -209,6 +216,7 @@ function PlayPageClient() {
     lastFailoverAt: 0,
     failedSources: new Set<string>(),
   });
+  const stablePlaybackTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Wake Lock 相关
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -227,6 +235,12 @@ function PlayPageClient() {
   const preferBestSource = async (
     sources: SearchResult[]
   ): Promise<SearchResult> => {
+    const healthRankedSources = rankSourcesByHealth(sources);
+    const healthySources = healthRankedSources.filter(
+      (source) => !isSourceCoolingDown(source.source)
+    );
+    sources = healthySources.length > 0 ? healthySources : healthRankedSources;
+
     if (sources.length === 1) return sources[0];
 
     // 短期记住同一部剧最近表现最好的线路。下一集先快速验证该线路，
@@ -252,7 +266,11 @@ function PlayPageClient() {
             Math.max((candidate?.episodes?.length || 1) - 1, 0)
           );
           const episodeUrl = candidate?.episodes?.[episodeIndex];
-          if (candidate && episodeUrl) {
+          if (
+            candidate &&
+            episodeUrl &&
+            !isSourceCoolingDown(candidate.source)
+          ) {
             const startedAt = performance.now();
             const quickCheck = await Promise.race([
               fetch(episodeUrl, { method: 'HEAD', mode: 'no-cors' }).then(
@@ -391,6 +409,7 @@ function PlayPageClient() {
     try {
       const winner = resultsWithScore[0]?.source;
       if (winner) {
+        recordSourceSuccess(winner.source);
         localStorage.setItem(
           bestSourceMemoryKey,
           JSON.stringify({
@@ -580,6 +599,11 @@ function PlayPageClient() {
 
   // 清理播放器资源的统一函数
   const cleanupPlayer = () => {
+    if (stablePlaybackTimerRef.current) {
+      clearTimeout(stablePlaybackTimerRef.current);
+      stablePlaybackTimerRef.current = null;
+    }
+
     if (artPlayerRef.current) {
       try {
         // 销毁 HLS 实例
@@ -1862,6 +1886,8 @@ function PlayPageClient() {
       return;
     }
     console.log(videoUrl);
+    const playbackAttemptStartedAt = performance.now();
+    let startupRecorded = false;
 
     // 检测是否为WebKit浏览器
     const isWebkit =
@@ -2023,6 +2049,11 @@ function PlayPageClient() {
                 if (now - health.lastStallAt > 45000) health.stalls = 0;
                 health.lastStallAt = now;
                 health.stalls += 1;
+                recordSourceStall(currentSourceRef.current);
+                if (stablePlaybackTimerRef.current) {
+                  clearTimeout(stablePlaybackTimerRef.current);
+                  stablePlaybackTimerRef.current = null;
+                }
 
                 // 第一次/第二次卡顿先主动降一级，优先恢复连续播放。
                 if (health.stalls <= 2 && hls.levels?.length > 1) {
@@ -2043,6 +2074,7 @@ function PlayPageClient() {
                 ) {
                   const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;
                   health.failedSources.add(currentKey);
+                  recordSourceFailure(currentSourceRef.current);
                   try {
                     const memoryKey = `joyflix:best-source:v1:${encodeURIComponent(
                       searchTitle || videoTitleRef.current
@@ -2052,14 +2084,16 @@ function PlayPageClient() {
                     // 清理失败不影响自动换源。
                   }
                   const episodeIndex = currentEpisodeIndexRef.current;
-                  const candidate = availableSources.find((source) => {
-                    const key = `${source.source}-${source.id}`;
-                    return (
-                      key !== currentKey &&
-                      !health.failedSources.has(key) &&
-                      Boolean(source.episodes?.[episodeIndex])
-                    );
-                  });
+                  const candidate = rankSourcesByHealth(
+                    availableSources.filter((source) => {
+                      const key = `${source.source}-${source.id}`;
+                      return (
+                        key !== currentKey &&
+                        !health.failedSources.has(key) &&
+                        Boolean(source.episodes?.[episodeIndex])
+                      );
+                    })
+                  )[0];
 
                   if (candidate) {
                     health.lastFailoverAt = now;
@@ -2251,7 +2285,30 @@ function PlayPageClient() {
         requestWakeLock();
       });
 
+      artPlayerRef.current.on('video:playing', () => {
+        if (stablePlaybackTimerRef.current) {
+          clearTimeout(stablePlaybackTimerRef.current);
+        }
+        const sourceAtStart = currentSourceRef.current;
+        stablePlaybackTimerRef.current = setTimeout(() => {
+          if (
+            artPlayerRef.current &&
+            !artPlayerRef.current.paused &&
+            currentSourceRef.current === sourceAtStart
+          ) {
+            const activeHls = artPlayerRef.current.video?.hls;
+            if (activeHls) activeHls.autoLevelCapping = -1;
+            playbackHealthRef.current.stalls = 0;
+            recordSourceSuccess(sourceAtStart);
+          }
+        }, 30000);
+      });
+
       artPlayerRef.current.on('pause', () => {
+        if (stablePlaybackTimerRef.current) {
+          clearTimeout(stablePlaybackTimerRef.current);
+          stablePlaybackTimerRef.current = null;
+        }
         releaseWakeLock();
         saveCurrentPlayProgress();
       });
@@ -2276,6 +2333,13 @@ function PlayPageClient() {
       artPlayerRef.current.on('video:canplay', () => {
         // 不在短暂恢复时立即清空卡顿计数。卡顿计数会在 45 秒稳定窗口后自动衰减，
         // 这样连续反复缓冲可以可靠触发备用源切换。
+        if (!startupRecorded && currentSourceRef.current) {
+          startupRecorded = true;
+          recordSourceSuccess(
+            currentSourceRef.current,
+            performance.now() - playbackAttemptStartedAt
+          );
+        }
 
         // 若存在需要恢复的播放进度，则跳转
         if (resumeTimeRef.current && resumeTimeRef.current > 0) {
