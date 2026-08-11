@@ -1,0 +1,70 @@
+name: Apply source health player optimization v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-source-health-player-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Patch player
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('src/app/play/page.tsx')
+          text = path.read_text()
+          replacements = [
+            ("import { SearchResult } from '@/lib/types';\nimport { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';", "import { SearchResult } from '@/lib/types';\nimport {\n  isSourceCoolingDown,\n  rankSourcesByHealth,\n  recordSourceFailure,\n  recordSourceStall,\n  recordSourceSuccess,\n} from '@/lib/source-health.client';\nimport { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';"),
+            ("  const playbackHealthRef = useRef({\n    stalls: 0,\n    lastStallAt: 0,\n    lastFailoverAt: 0,\n    failedSources: new Set<string>(),\n  });", "  const playbackHealthRef = useRef({\n    stalls: 0,\n    lastStallAt: 0,\n    lastFailoverAt: 0,\n    failedSources: new Set<string>(),\n  });\n  const stablePlaybackTimerRef = useRef<NodeJS.Timeout | null>(null);"),
+            ("  const preferBestSource = async (\n    sources: SearchResult[]\n  ): Promise<SearchResult> => {\n    if (sources.length === 1) return sources[0];", "  const preferBestSource = async (\n    sources: SearchResult[]\n  ): Promise<SearchResult> => {\n    const healthRankedSources = rankSourcesByHealth(sources);\n    const healthySources = healthRankedSources.filter(\n      (source) => !isSourceCoolingDown(source.source)\n    );\n    sources = healthySources.length > 0 ? healthySources : healthRankedSources;\n\n    if (sources.length === 1) return sources[0];"),
+            ("          if (candidate && episodeUrl) {", "          if (\n            candidate &&\n            episodeUrl &&\n            !isSourceCoolingDown(candidate.source)\n          ) {"),
+            ("      if (winner) {\n        localStorage.setItem(", "      if (winner) {\n        recordSourceSuccess(winner.source);\n        localStorage.setItem("),
+            ("  const cleanupPlayer = () => {\n    if (artPlayerRef.current) {", "  const cleanupPlayer = () => {\n    if (stablePlaybackTimerRef.current) {\n      clearTimeout(stablePlaybackTimerRef.current);\n      stablePlaybackTimerRef.current = null;\n    }\n\n    if (artPlayerRef.current) {"),
+            ("    console.log(videoUrl);\n\n    // 检测是否为WebKit浏览器", "    console.log(videoUrl);\n    const playbackAttemptStartedAt = performance.now();\n    let startupRecorded = false;\n\n    // 检测是否为WebKit浏览器"),
+            ("                health.lastStallAt = now;\n                health.stalls += 1;", "                health.lastStallAt = now;\n                health.stalls += 1;\n                recordSourceStall(currentSourceRef.current);\n                if (stablePlaybackTimerRef.current) {\n                  clearTimeout(stablePlaybackTimerRef.current);\n                  stablePlaybackTimerRef.current = null;\n                }"),
+            ("                  const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;\n                  health.failedSources.add(currentKey);", "                  const currentKey = `${currentSourceRef.current}-${currentIdRef.current}`;\n                  health.failedSources.add(currentKey);\n                  recordSourceFailure(currentSourceRef.current);"),
+            ("""                  const episodeIndex = currentEpisodeIndexRef.current;\n                  const candidate = availableSources.find((source) => {\n                    const key = `${source.source}-${source.id}`;\n                    return (\n                      key !== currentKey &&\n                      !health.failedSources.has(key) &&\n                      Boolean(source.episodes?.[episodeIndex])\n                    );\n                  });""", """                  const episodeIndex = currentEpisodeIndexRef.current;\n                  const candidate = rankSourcesByHealth(\n                    availableSources.filter((source) => {\n                      const key = `${source.source}-${source.id}`;\n                      return (\n                        key !== currentKey &&\n                        !health.failedSources.has(key) &&\n                        Boolean(source.episodes?.[episodeIndex])\n                      );\n                    })\n                  )[0];"""),
+            ("      artPlayerRef.current.on('play', () => {\n        requestWakeLock();\n      });", "      artPlayerRef.current.on('play', () => {\n        requestWakeLock();\n      });\n\n      artPlayerRef.current.on('video:playing', () => {\n        if (stablePlaybackTimerRef.current) {\n          clearTimeout(stablePlaybackTimerRef.current);\n        }\n        const sourceAtStart = currentSourceRef.current;\n        stablePlaybackTimerRef.current = setTimeout(() => {\n          if (\n            artPlayerRef.current &&\n            !artPlayerRef.current.paused &&\n            currentSourceRef.current === sourceAtStart\n          ) {\n            const activeHls = artPlayerRef.current.video?.hls;\n            if (activeHls) activeHls.autoLevelCapping = -1;\n            playbackHealthRef.current.stalls = 0;\n            recordSourceSuccess(sourceAtStart);\n          }\n        }, 30000);\n      });"),
+            ("      artPlayerRef.current.on('pause', () => {\n        releaseWakeLock();\n        saveCurrentPlayProgress();\n      });", "      artPlayerRef.current.on('pause', () => {\n        if (stablePlaybackTimerRef.current) {\n          clearTimeout(stablePlaybackTimerRef.current);\n          stablePlaybackTimerRef.current = null;\n        }\n        releaseWakeLock();\n        saveCurrentPlayProgress();\n      });"),
+            ("      artPlayerRef.current.on('video:canplay', () => {\n        // 不在短暂恢复时立即清空卡顿计数。卡顿计数会在 45 秒稳定窗口后自动衰减，\n        // 这样连续反复缓冲可以可靠触发备用源切换。", "      artPlayerRef.current.on('video:canplay', () => {\n        // 不在短暂恢复时立即清空卡顿计数。卡顿计数会在 45 秒稳定窗口后自动衰减，\n        // 这样连续反复缓冲可以可靠触发备用源切换。\n        if (!startupRecorded && currentSourceRef.current) {\n          startupRecorded = true;\n          recordSourceSuccess(\n            currentSourceRef.current,\n            performance.now() - playbackAttemptStartedAt\n          );\n        }")
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected one match, got {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+      - name: Validate
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm gen:runtime
+          pnpm exec tsc --noEmit
+          pnpm run build
+
+      - name: Remove one-shot workflows and commit
+        run: |
+          rm -f .github/workflows/apply-source-health-player.yml
+          rm -f .github/workflows/apply-source-health-player-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/app/play/page.tsx .github/workflows/apply-source-health-player.yml .github/workflows/apply-source-health-player-v2.yml
+          git commit -m 'perf: learn source health and recover playback quality'
+          git push
