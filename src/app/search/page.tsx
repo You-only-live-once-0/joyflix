@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/exhaustive-deps, @typescript/eslint-no-explicit-any */
 'use client';
 
-import React, { Suspense, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronUp, Search, X, Trash2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
@@ -38,6 +38,8 @@ const SearchPageClient: React.FC = () => {
     DoubanResult['list']
   >([]);
   const [isRecommendationsLoading, setIsRecommendationsLoading] = useState(true);
+  const activeSearchControllerRef = useRef<AbortController | null>(null);
+  const searchRequestIdRef = useRef(0);
   
   // 聚合后的结果（按标题和年份分组）
   const aggregatedResults = useMemo(() => {
@@ -156,12 +158,20 @@ const SearchPageClient: React.FC = () => {
       // 保存到搜索历史 (事件监听会自动更新界面)
       addSearchHistory(query);
     } else {
+      searchRequestIdRef.current += 1;
+      activeSearchControllerRef.current?.abort();
+      activeSearchControllerRef.current = null;
       setShowResults(false);
       setShowSuggestions(false);
     }
   }, [searchParams]);
 
   const fetchSearchResults = async (query: string) => {
+    const requestId = ++searchRequestIdRef.current;
+    activeSearchControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeSearchControllerRef.current = controller;
+
     try {
       // 立即设置加载和显示状态，清空旧结果
       setIsLoading(true);
@@ -170,7 +180,8 @@ const SearchPageClient: React.FC = () => {
       setSearchResults([]);
 
       const response = await fetch(
-        `/api/searchstream?q=${encodeURIComponent(query.trim())}`
+        `/api/searchstream?q=${encodeURIComponent(query.trim())}`,
+        { signal: controller.signal }
       );
 
       if (!response.body) {
@@ -193,6 +204,11 @@ const SearchPageClient: React.FC = () => {
         const lines = buffer.split('\n');
 
         buffer = lines.pop() || '';
+
+        if (requestId !== searchRequestIdRef.current) {
+          await reader.cancel();
+          return;
+        }
 
         for (const line of lines) {
           if (line.trim() === '') continue;
@@ -219,10 +235,18 @@ const SearchPageClient: React.FC = () => {
               }
 
               // 聚合结果会在 useMemo 中统一排序；这里仅追加，避免每个流式分块都对全量结果重新排序。
-              setSearchResults((prevResults) => [
-                ...prevResults,
-                ...filteredResults,
-              ]);
+              setSearchResults((prevResults) => {
+                const existing = new Set(
+                  prevResults.map((item) => `${item.source}:${item.id}`)
+                );
+                const uniqueNew = filteredResults.filter((item) => {
+                  const key = `${item.source}:${item.id}`;
+                  if (existing.has(key)) return false;
+                  existing.add(key);
+                  return true;
+                });
+                return [...prevResults, ...uniqueNew];
+              });
             }
           } catch (e) {
             console.error('Error parsing streaming JSON', e);
@@ -230,12 +254,18 @@ const SearchPageClient: React.FC = () => {
         }
       }
     } catch (error) {
-      console.error('Search failed:', error);
-      setSearchResults([]);
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (requestId === searchRequestIdRef.current) {
+        console.error('Search failed:', error);
+        setSearchResults([]);
+      }
     } finally {
-      // 确保在流程最后（如无结果时）骨架屏和流状态也能被关闭
-      setIsLoading(false);
-      setIsStreaming(false);
+      // 旧请求结束时不能关闭新请求的加载状态。
+      if (requestId === searchRequestIdRef.current) {
+        setIsLoading(false);
+        setIsStreaming(false);
+        activeSearchControllerRef.current = null;
+      }
     }
   };
 
