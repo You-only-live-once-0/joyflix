@@ -59,15 +59,7 @@ function getHealth(store: HealthStore, source: string): SourceHealth {
   return { ...EMPTY_HEALTH, ...(store[source] || {}) };
 }
 
-export function isSourceCoolingDown(source: string): boolean {
-  const health = getHealth(loadStore(), source);
-  return health.cooldownUntil > Date.now();
-}
-
-export function getSourceHealthScore(source: string): number {
-  const health = getHealth(loadStore(), source);
-  const now = Date.now();
-
+function scoreHealth(health: SourceHealth, now: number): number {
   if (health.cooldownUntil > now) return -10000;
 
   let score = 0;
@@ -91,9 +83,30 @@ export function getSourceHealthScore(source: string): number {
   return score;
 }
 
+export function isSourceCoolingDown(source: string): boolean {
+  const health = getHealth(loadStore(), source);
+  return health.cooldownUntil > Date.now();
+}
+
+export function getSourceHealthScore(source: string): number {
+  const store = loadStore();
+  return scoreHealth(getHealth(store, source), Date.now());
+}
+
 export function rankSourcesByHealth<T extends { source: string }>(sources: T[]): T[] {
+  // 排序前只读取/解析一次 localStorage，避免比较器 O(n log n) 次重复 JSON.parse。
+  const store = loadStore();
+  const now = Date.now();
+  const scores = new Map<string, number>();
+
+  for (const source of sources) {
+    if (!scores.has(source.source)) {
+      scores.set(source.source, scoreHealth(getHealth(store, source.source), now));
+    }
+  }
+
   return [...sources].sort(
-    (a, b) => getSourceHealthScore(b.source) - getSourceHealthScore(a.source)
+    (a, b) => (scores.get(b.source) || 0) - (scores.get(a.source) || 0)
   );
 }
 
