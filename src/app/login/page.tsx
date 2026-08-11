@@ -1,17 +1,13 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { useTheme } from 'next-themes'; // Import useTheme
-import { ThemeProvider } from '@/components/ThemeProvider'; // Add this import
-
-import { useSite } from '@/components/SiteProvider';
 import { Eye, EyeOff } from 'lucide-react';
 
+import { ThemeProvider } from '@/components/ThemeProvider';
+import { useSite } from '@/components/SiteProvider';
+
 function LoginPageClient() {
-  const { setTheme } = useTheme(); // Destructure setTheme
   const router = useRouter();
   const searchParams = useSearchParams();
   const [password, setPassword] = useState('');
@@ -23,24 +19,21 @@ function LoginPageClient() {
   const [rememberMe, setRememberMe] = useState(false);
   const { siteName } = useSite();
 
-  // 在客户端挂载后设置配置
   useEffect(() => {
-    // Load remembered username
-    if (typeof window !== 'undefined') {
-      const rememberedUsername = localStorage.getItem('rememberedUsername');
-      const rememberedPassword = localStorage.getItem('rememberedPassword'); // New line
-      if (rememberedUsername) {
-        setUsername(rememberedUsername);
-        if (rememberedPassword) { // New line
-          setPassword(rememberedPassword); // New line
-        } // New line
-        setRememberMe(true); // Check remember me if username is found
-      }
+    if (typeof window === 'undefined') return;
 
-      const storageType = (window as any).RUNTIME_CONFIG?.STORAGE_TYPE;
-      setShouldAskUsername(storageType && storageType !== 'localstorage');
+    // “记住我”只保存用户名。密码由浏览器密码管理器/登录 Cookie 负责，
+    // 不再把明文密码写进 localStorage。
+    const rememberedUsername = localStorage.getItem('rememberedUsername');
+    if (rememberedUsername) {
+      setUsername(rememberedUsername);
+      setRememberMe(true);
     }
-  }, [setTheme]); // Add setTheme to dependency array
+    localStorage.removeItem('rememberedPassword');
+
+    const storageType = (window as any).RUNTIME_CONFIG?.STORAGE_TYPE;
+    setShouldAskUsername(Boolean(storageType && storageType !== 'localstorage'));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -60,14 +53,13 @@ function LoginPageClient() {
       });
 
       if (res.ok) {
-        // Save/clear remembered username and password
         if (rememberMe && username) {
           localStorage.setItem('rememberedUsername', username);
-          localStorage.setItem('rememberedPassword', password); // New line
         } else {
           localStorage.removeItem('rememberedUsername');
-          localStorage.removeItem('rememberedPassword'); // New line
         }
+        localStorage.removeItem('rememberedPassword');
+
         const redirect = searchParams.get('redirect') || '/';
         router.replace(redirect);
       } else if (res.status === 401) {
@@ -76,7 +68,7 @@ function LoginPageClient() {
         const data = await res.json().catch(() => ({}));
         setError(data.error ?? '服务器错误');
       }
-    } catch (error) {
+    } catch {
       setError('网络错误，请稍后重试');
     } finally {
       setLoading(false);
@@ -85,94 +77,88 @@ function LoginPageClient() {
 
   return (
     <div className='relative z-10 w-full sm:max-w-md lg:max-w-md rounded-3xl bg-black bg-opacity-70 p-10 shadow-2xl animate-slideUp'>
-        <h1 className='mb-8 text-center text-4xl font-bold text-white'>
-          {siteName}
-        </h1>
-        <form onSubmit={handleSubmit} className='space-y-6'>
-          {shouldAskUsername && (
-            <div className="relative">
-              <input
-                id='username'
-                type='text'
-                autoComplete='username'
-                className='block w-full rounded-md border border-gray-400 bg-transparent py-3 px-4 text-white focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-white sm:text-base'
-                placeholder='用户名'
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-            </div>
-          )}
-
-          <div className="relative">
+      <h1 className='mb-8 text-center text-4xl font-bold text-white'>
+        {siteName}
+      </h1>
+      <form onSubmit={handleSubmit} className='space-y-6'>
+        {shouldAskUsername && (
+          <div className='relative'>
             <input
-              id='password'
-              type={showPassword ? 'text' : 'password'}
-              autoComplete='current-password'
-                              className='block w-full rounded-md border border-gray-400 bg-transparent py-3 px-4 text-white focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-white sm:text-base'
-              placeholder='密码'
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              id='username'
+              type='text'
+              autoComplete='username'
+              className='block w-full rounded-md border border-gray-400 bg-transparent py-3 px-4 text-white focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-white sm:text-base'
+              placeholder='用户名'
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
             />
-            
-            <div className="absolute inset-y-0 right-0 pr-3 flex items-center text-sm leading-5">
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="text-gray-400 hover:text-white focus:outline-none"
-              >
-                {showPassword ? (
-                  <EyeOff className="h-5 w-5" />
-                ) : (                  <Eye className="h-5 w-5" />
-                )}
-              </button>
-            </div>
           </div>
+        )}
 
-          {/* Remember Me Checkbox */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center">
-              <input
-                id="remember-me"
-                name="remember-me"
-                type="checkbox"
-                className="hidden peer" // Hide default, add peer
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-              />
-              <label htmlFor="remember-me" className="flex items-center cursor-pointer">
-                <div className="w-4 h-4 border-2 border-gray-300 rounded flex items-center justify-center peer-checked:bg-blue-500 peer-checked:border-blue-500 transition-all duration-200">
-                  {rememberMe && (
-                    <span className="text-white text-xs">✓</span>
-                  )}
-                </div>
-                <span className="ml-2 text-sm text-gray-300">记住我</span>
-              </label>
-            </div>
+        <div className='relative'>
+          <input
+            id='password'
+            type={showPassword ? 'text' : 'password'}
+            autoComplete='current-password'
+            className='block w-full rounded-md border border-gray-400 bg-transparent py-3 px-4 text-white focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-white sm:text-base'
+            placeholder='密码'
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+
+          <div className='absolute inset-y-0 right-0 pr-3 flex items-center text-sm leading-5'>
+            <button
+              type='button'
+              onClick={() => setShowPassword(!showPassword)}
+              className='text-gray-400 hover:text-white focus:outline-none'
+              aria-label={showPassword ? '隐藏密码' : '显示密码'}
+            >
+              {showPassword ? (
+                <EyeOff className='h-5 w-5' />
+              ) : (
+                <Eye className='h-5 w-5' />
+              )}
+            </button>
           </div>
+        </div>
 
-          {error && (
-            <p className='text-sm text-red-500'>{error}</p>
-          )}
+        <div className='flex items-center justify-between'>
+          <div className='flex items-center'>
+            <input
+              id='remember-me'
+              name='remember-me'
+              type='checkbox'
+              className='hidden peer'
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+            />
+            <label htmlFor='remember-me' className='flex items-center cursor-pointer'>
+              <div className='w-4 h-4 border-2 border-gray-300 rounded flex items-center justify-center peer-checked:bg-blue-500 peer-checked:border-blue-500 transition-all duration-200'>
+                {rememberMe && <span className='text-white text-xs'>✓</span>}
+              </div>
+              <span className='ml-2 text-sm text-gray-300'>记住用户名</span>
+            </label>
+          </div>
+        </div>
 
-          {/* 登录 / 注册按钮 */}
-          <button
-            type='submit'
-            disabled={
-              !password || loading || (shouldAskUsername && !username)
-            }
-            className='inline-flex w-full justify-center rounded-lg bg-blue-400/70 py-3 text-base font-semibold text-white shadow-lg transition-all duration-200 hover:bg-blue-500/70 disabled:cursor-not-allowed disabled:opacity-50'
-          >
-            {loading ? '登录中...' : '登录'}
-          </button>
-        </form>
-      </div>
+        {error && <p className='text-sm text-red-500'>{error}</p>}
+
+        <button
+          type='submit'
+          disabled={!password || loading || (shouldAskUsername && !username)}
+          className='inline-flex w-full justify-center rounded-lg bg-blue-400/70 py-3 text-base font-semibold text-white shadow-lg transition-all duration-200 hover:bg-blue-500/70 disabled:cursor-not-allowed disabled:opacity-50'
+        >
+          {loading ? '登录中...' : '登录'}
+        </button>
+      </form>
+    </div>
   );
 }
 
 export default function LoginPage() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
-      <ThemeProvider forcedTheme="dark">
+      <ThemeProvider forcedTheme='dark'>
         <LoginPageClient />
       </ThemeProvider>
     </Suspense>
