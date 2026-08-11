@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 /* eslint-disable @typescript-eslint/no-var-requires */
 const webpack = require('webpack');
+const defaultCache = require('next-pwa/cache');
 
 const resolvedUpstashUrl =
   process.env.UPSTASH_URL ||
@@ -89,11 +90,40 @@ const nextConfig = {
   },
 };
 
+const privateApiPattern =
+  /\/api\/(?:favorites|playrecords|searchhistory|skipconfigs|admin)(?:\/|$|\?)/i;
+const streamingApiPattern = /\/api\/searchstream(?:\?|$)/i;
+const streamingMediaPattern =
+  /\.(?:m3u8|ts|m4s|mp4|webm|ogv)(?:\?.*)?$/i;
+
 const withPWA = require('next-pwa')({
   dest: 'public',
   disable: process.env.NODE_ENV === 'development',
   skipWaiting: true,
   clientsClaim: true,
+  runtimeCaching: [
+    // Video/HLS should flow directly from the network. Caching large media in
+    // Workbox can consume storage and can replay stale signed playlists.
+    {
+      urlPattern: streamingMediaPattern,
+      handler: 'NetworkOnly',
+    },
+    // Streaming search must remain truly streaming rather than being buffered
+    // by Workbox's generic /api NetworkFirst rule.
+    {
+      urlPattern: streamingApiPattern,
+      handler: 'NetworkOnly',
+      method: 'GET',
+    },
+    // These responses are user-specific. Never let a previous account's data
+    // become a service-worker fallback for another account on the same device.
+    {
+      urlPattern: privateApiPattern,
+      handler: 'NetworkOnly',
+      method: 'GET',
+    },
+    ...defaultCache,
+  ],
 });
 
 module.exports = withPWA(nextConfig);

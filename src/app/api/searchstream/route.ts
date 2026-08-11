@@ -35,10 +35,19 @@ export async function GET(request: Request) {
       let nextIndex = 0;
 
       const processSite = async (site: (typeof apiSites)[0]) => {
+        if (request.signal.aborted) return;
         try {
-          const results: SearchResult[] = await searchFromApi(site, query);
-          if (results.length > 0) {
-            controller.enqueue(encoder.encode(JSON.stringify(results) + '\n'));
+          const results: SearchResult[] = await searchFromApi(
+            site,
+            query,
+            request.signal
+          );
+          if (results.length > 0 && !request.signal.aborted) {
+            try {
+              controller.enqueue(encoder.encode(JSON.stringify(results) + '\n'));
+            } catch {
+              // Client disconnected between the fetch completing and enqueue.
+            }
           }
         } catch (err: any) {
           console.warn(`搜索失败 ${site.name}:`, err?.message || err);
@@ -49,6 +58,7 @@ export async function GET(request: Request) {
       // 这样仍能持续流式返回首批结果，同时避免片源增加后几十个请求同时爆发。
       const worker = async () => {
         while (true) {
+          if (request.signal.aborted) return;
           const index = nextIndex++;
           if (index >= apiSites.length) return;
           await processSite(apiSites[index]);
@@ -61,7 +71,9 @@ export async function GET(request: Request) {
           () => worker()
         )
       );
-      controller.close();
+      if (!request.signal.aborted) {
+        controller.close();
+      }
     },
   });
 

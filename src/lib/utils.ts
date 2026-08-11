@@ -90,24 +90,34 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
       }
       const manifestContent = await manifestResponse.text();
 
-      // 2. 从清单中解析分片URL和最高画质
-      const lines = manifestContent.split('\n');
-      const segmentUrls = lines
-        .filter(line => line.trim() && !line.startsWith('#'))
-        .map(url => new URL(url, m3u8Url).href);
-
-      if (segmentUrls.length === 0) {
-        throw new Error('No segments found in manifest');
+      // 2. 解析 master/media playlist。旧逻辑会把 master playlist 中的
+      // variant .m3u8 当成视频分片测速，文件很小，导致速度被严重低估。
+      const masterLines = manifestContent.split('\n');
+      const variants: Array<{ url: string; width: number }> = [];
+      for (let index = 0; index < masterLines.length; index += 1) {
+        const line = masterLines[index].trim();
+        if (!line.startsWith('#EXT-X-STREAM-INF:')) continue;
+        const resolution = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+        let nextIndex = index + 1;
+        while (
+          nextIndex < masterLines.length &&
+          (!masterLines[nextIndex].trim() || masterLines[nextIndex].trim().startsWith('#'))
+        ) {
+          nextIndex += 1;
+        }
+        const variantUrl = masterLines[nextIndex]?.trim();
+        if (variantUrl) {
+          variants.push({
+            url: new URL(variantUrl, m3u8Url).href,
+            width: resolution ? parseInt(resolution[1], 10) : 0,
+          });
+        }
       }
 
-      const resolutionRegex = /RESOLUTION=(\d+)x(\d+)/g;
-      let match;
-      let maxResolution = 0;
-      while ((match = resolutionRegex.exec(manifestContent)) !== null) {
-        const width = parseInt(match[1], 10);
-        if (width > maxResolution) maxResolution = width;
-      }
-      
+      const maxResolution = variants.reduce(
+        (max, variant) => Math.max(max, variant.width),
+        0
+      );
       let quality = '未知';
       if (maxResolution > 0) {
         quality =
@@ -116,6 +126,35 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
           maxResolution >= 1920 ? '1080P' :
           maxResolution >= 1280 ? '720P' :
           maxResolution >= 854 ? '480P' : 'SD';
+      }
+
+      let mediaManifestContent = manifestContent;
+      let mediaPlaylistUrl = m3u8Url;
+      if (variants.length > 0) {
+        const sortedVariants = [...variants].sort((a, b) => b.width - a.width);
+        const probeVariant =
+          sortedVariants.find((variant) => variant.width > 0 && variant.width <= 1920) ||
+          sortedVariants[sortedVariants.length - 1];
+        if (probeVariant) {
+          const variantResponse = await fetch(probeVariant.url, {
+            signal: controller.signal,
+          });
+          if (variantResponse.ok) {
+            mediaManifestContent = await variantResponse.text();
+            mediaPlaylistUrl = probeVariant.url;
+          }
+        }
+      }
+
+      const segmentUrls = mediaManifestContent
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith('#'))
+        .map((url) => new URL(url, mediaPlaylistUrl).href)
+        .filter((url) => !/\.m3u8(?:\?|$)/i.test(url));
+
+      if (segmentUrls.length === 0) {
+        throw new Error('No media segments found in manifest');
       }
 
       // 3. 选择测试分片（第一个和中间一个）

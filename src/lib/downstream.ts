@@ -7,6 +7,30 @@ import {
 } from '@/lib/public-media';
 import { cleanHtmlTags } from '@/lib/utils';
 
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  externalSignal?: AbortSignal
+): Promise<Response> {
+  const controller = new AbortController();
+  const abortFromExternal = () => controller.abort();
+
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
+  }
+
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', abortFromExternal);
+  }
+}
+
 interface ApiSearchItem {
   vod_id: string;
   vod_name: string;
@@ -22,8 +46,10 @@ interface ApiSearchItem {
 
 export async function searchFromApi(
   apiSite: ApiSite,
-  query: string
+  query: string,
+  externalSignal?: AbortSignal
 ): Promise<SearchResult[]> {
+  if (externalSignal?.aborted) return [];
   if (isPublicMediaAdapter(apiSite.api)) {
     return searchPublicMedia(apiSite, query);
   }
@@ -34,16 +60,12 @@ export async function searchFromApi(
       apiBaseUrl + API_CONFIG.search.path + encodeURIComponent(query);
     const apiName = apiSite.name;
 
-    // 添加超时处理
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    const response = await fetch(apiUrl, {
-      headers: API_CONFIG.search.headers,
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
+    const response = await fetchWithTimeout(
+      apiUrl,
+      { headers: API_CONFIG.search.headers },
+      8000,
+      externalSignal
+    );
 
     if (!response.ok) {
       return [];
@@ -128,18 +150,13 @@ export async function searchFromApi(
 
         const pagePromise = (async () => {
           try {
-            const pageController = new AbortController();
-            const pageTimeoutId = setTimeout(
-              () => pageController.abort(),
-              8000
+            if (externalSignal?.aborted) return [];
+            const pageResponse = await fetchWithTimeout(
+              pageUrl,
+              { headers: API_CONFIG.search.headers },
+              8000,
+              externalSignal
             );
-
-            const pageResponse = await fetch(pageUrl, {
-              headers: API_CONFIG.search.headers,
-              signal: pageController.signal,
-            });
-
-            clearTimeout(pageTimeoutId);
 
             if (!pageResponse.ok) return [];
 

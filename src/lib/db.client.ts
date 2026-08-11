@@ -396,9 +396,49 @@ class HybridCacheManager {
 // 获取缓存管理器实例
 const cacheManager = HybridCacheManager.getInstance();
 
+let playRecordsFetchPromise: Promise<Record<string, PlayRecord>> | null = null;
+let lastPlayRecordsFetchAt = 0;
+const PLAY_RECORDS_SYNC_INTERVAL = 60_000;
+
 let favoritesFetchPromise: Promise<Record<string, Favorite>> | null = null;
 let lastFavoritesFetchAt = 0;
 const FAVORITES_SYNC_INTERVAL = 60_000;
+
+let searchHistoryFetchPromise: Promise<string[]> | null = null;
+let lastSearchHistoryFetchAt = 0;
+const SEARCH_HISTORY_SYNC_INTERVAL = 120_000;
+
+function fetchPlayRecordsShared(): Promise<Record<string, PlayRecord>> {
+  if (!playRecordsFetchPromise) {
+    lastPlayRecordsFetchAt = Date.now();
+    playRecordsFetchPromise = fetchFromApi<Record<string, PlayRecord>>(
+      '/api/playrecords'
+    )
+      .then((freshData) => {
+        cacheManager.cachePlayRecords(freshData);
+        return freshData;
+      })
+      .finally(() => {
+        playRecordsFetchPromise = null;
+      });
+  }
+  return playRecordsFetchPromise;
+}
+
+function fetchSearchHistoryShared(): Promise<string[]> {
+  if (!searchHistoryFetchPromise) {
+    lastSearchHistoryFetchAt = Date.now();
+    searchHistoryFetchPromise = fetchFromApi<string[]>('/api/searchhistory')
+      .then((freshData) => {
+        cacheManager.cacheSearchHistory(freshData);
+        return freshData;
+      })
+      .finally(() => {
+        searchHistoryFetchPromise = null;
+      });
+  }
+  return searchHistoryFetchPromise;
+}
 
 function fetchFavoritesShared(): Promise<Record<string, Favorite>> {
   if (!favoritesFetchPromise) {
@@ -434,6 +474,36 @@ function syncFavoritesInBackground(
     .catch((err) => {
       console.warn('后台同步收藏失败:', err);
     });
+}
+
+function syncPlayRecordsInBackground(
+  cachedRecords: Record<string, PlayRecord>
+): void {
+  if (Date.now() - lastPlayRecordsFetchAt < PLAY_RECORDS_SYNC_INTERVAL) return;
+  void fetchPlayRecordsShared()
+    .then((freshData) => {
+      if (JSON.stringify(cachedRecords) !== JSON.stringify(freshData)) {
+        window.dispatchEvent(
+          new CustomEvent('playRecordsUpdated', { detail: freshData })
+        );
+      }
+    })
+    .catch((err) => console.warn('后台同步播放记录失败:', err));
+}
+
+function syncSearchHistoryInBackground(cachedHistory: string[]): void {
+  if (Date.now() - lastSearchHistoryFetchAt < SEARCH_HISTORY_SYNC_INTERVAL) {
+    return;
+  }
+  void fetchSearchHistoryShared()
+    .then((freshData) => {
+      if (JSON.stringify(cachedHistory) !== JSON.stringify(freshData)) {
+        window.dispatchEvent(
+          new CustomEvent('searchHistoryUpdated', { detail: freshData })
+        );
+      }
+    })
+    .catch((err) => console.warn('后台同步搜索历史失败:', err));
 }
 
 // ---- 错误处理辅助函数 ----
@@ -553,33 +623,12 @@ export async function getAllPlayRecords(): Promise<Record<string, PlayRecord>> {
     const cachedData = cacheManager.getCachedPlayRecords();
 
     if (cachedData) {
-      // 返回缓存数据，同时后台异步更新
-      fetchFromApi<Record<string, PlayRecord>>(`/api/playrecords`)
-        .then((freshData) => {
-          // 只有数据真正不同时才更新缓存
-          if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
-            cacheManager.cachePlayRecords(freshData);
-            // 触发数据更新事件，供组件监听
-            window.dispatchEvent(
-              new CustomEvent('playRecordsUpdated', {
-                detail: freshData,
-              })
-            );
-          }
-        })
-        .catch((err) => {
-          console.warn('后台同步播放记录失败:', err);
-          triggerGlobalError('后台同步播放记录失败');
-        });
-
+      syncPlayRecordsInBackground(cachedData);
       return cachedData;
     } else {
       // 缓存为空，直接从 API 获取并缓存
       try {
-        const freshData = await fetchFromApi<Record<string, PlayRecord>>(
-          `/api/playrecords`
-        );
-        cacheManager.cachePlayRecords(freshData);
+        const freshData = await fetchPlayRecordsShared();
         return freshData;
       } catch (err) {
         console.error('获取播放记录失败:', err);
@@ -634,6 +683,7 @@ export async function savePlayRecord(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ key, record }),
+        keepalive: true,
       });
     } catch (err) {
       await handleDatabaseOperationFailure('playRecords', err);
@@ -742,31 +792,12 @@ export async function getSearchHistory(): Promise<string[]> {
     const cachedData = cacheManager.getCachedSearchHistory();
 
     if (cachedData) {
-      // 返回缓存数据，同时后台异步更新
-      fetchFromApi<string[]>(`/api/searchhistory`)
-        .then((freshData) => {
-          // 只有数据真正不同时才更新缓存
-          if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
-            cacheManager.cacheSearchHistory(freshData);
-            // 触发数据更新事件
-            window.dispatchEvent(
-              new CustomEvent('searchHistoryUpdated', {
-                detail: freshData,
-              })
-            );
-          }
-        })
-        .catch((err) => {
-          console.warn('后台同步搜索历史失败:', err);
-          triggerGlobalError('后台同步搜索历史失败');
-        });
-
+      syncSearchHistoryInBackground(cachedData);
       return cachedData;
     } else {
       // 缓存为空，直接从 API 获取并缓存
       try {
-        const freshData = await fetchFromApi<string[]>(`/api/searchhistory`);
-        cacheManager.cacheSearchHistory(freshData);
+        const freshData = await fetchSearchHistoryShared();
         return freshData;
       } catch (err) {
         console.error('获取搜索历史失败:', err);
@@ -963,33 +994,12 @@ export async function getAllFavorites(): Promise<Record<string, Favorite>> {
     const cachedData = cacheManager.getCachedFavorites();
 
     if (cachedData) {
-      // 返回缓存数据，同时后台异步更新
-      fetchFromApi<Record<string, Favorite>>(`/api/favorites`)
-        .then((freshData) => {
-          // 只有数据真正不同时才更新缓存
-          if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
-            cacheManager.cacheFavorites(freshData);
-            // 触发数据更新事件
-            window.dispatchEvent(
-              new CustomEvent('favoritesUpdated', {
-                detail: freshData,
-              })
-            );
-          }
-        })
-        .catch((err) => {
-          console.warn('后台同步收藏失败:', err);
-          triggerGlobalError('后台同步收藏失败');
-        });
-
+      syncFavoritesInBackground(cachedData);
       return cachedData;
     } else {
       // 缓存为空，直接从 API 获取并缓存
       try {
-        const freshData = await fetchFromApi<Record<string, Favorite>>(
-          `/api/favorites`
-        );
-        cacheManager.cacheFavorites(freshData);
+        const freshData = await fetchFavoritesShared();
         return freshData;
       } catch (err) {
         console.error('获取收藏失败:', err);

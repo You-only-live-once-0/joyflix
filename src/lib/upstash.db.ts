@@ -7,6 +7,88 @@ import { Favorite, IStorage, PlayRecord, SkipConfig } from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
+const PASSWORD_HASH_PREFIX = 'pbkdf2-sha256';
+const PASSWORD_HASH_ITERATIONS = 210_000;
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hexToBytes(value: string): Uint8Array {
+  const pairs = value.match(/.{1,2}/g) || [];
+  return new Uint8Array(pairs.map((pair) => parseInt(pair, 16)));
+}
+
+function timingSafeEqualHex(left: string, right: string): boolean {
+  const leftBytes = hexToBytes(left);
+  const rightBytes = hexToBytes(right);
+  if (leftBytes.length !== rightBytes.length) return false;
+
+  let difference = 0;
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    difference |= leftBytes[index] ^ rightBytes[index];
+  }
+  return difference === 0;
+}
+
+async function derivePasswordHash(
+  password: string,
+  saltHex: string,
+  iterations: number
+): Promise<string> {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt: hexToBytes(saltHex),
+      iterations,
+    },
+    keyMaterial,
+    256
+  );
+  return bytesToHex(new Uint8Array(derived));
+}
+
+async function encodePassword(password: string): Promise<string> {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const saltHex = bytesToHex(salt);
+  const hash = await derivePasswordHash(
+    password,
+    saltHex,
+    PASSWORD_HASH_ITERATIONS
+  );
+  return `${PASSWORD_HASH_PREFIX}$${PASSWORD_HASH_ITERATIONS}$${saltHex}$${hash}`;
+}
+
+async function verifyEncodedPassword(
+  password: string,
+  encoded: string
+): Promise<boolean> {
+  const [prefix, iterationsRaw, saltHex, expectedHash] = encoded.split('$');
+  const iterations = Number(iterationsRaw);
+  if (
+    prefix !== PASSWORD_HASH_PREFIX ||
+    !Number.isInteger(iterations) ||
+    iterations < 100_000 ||
+    iterations > 1_000_000 ||
+    !/^[a-f0-9]{32}$/i.test(saltHex || '') ||
+    !/^[a-f0-9]{64}$/i.test(expectedHash || '')
+  ) {
+    return false;
+  }
+  const candidateHash = await derivePasswordHash(password, saltHex, iterations);
+  return timingSafeEqualHex(candidateHash, expectedHash);
+}
 
 // 数据类型转换辅助函数
 function ensureString(value: any): string {
@@ -90,15 +172,15 @@ export class UpstashRedisStorage implements IStorage {
     const keys: string[] = await withRetry(() => this.client.keys(pattern));
     if (keys.length === 0) return {};
 
+    const values = await withRetry(() => this.client.mget(keys));
     const result: Record<string, PlayRecord> = {};
-    for (const fullKey of keys) {
-      const value = await withRetry(() => this.client.get(fullKey));
+    keys.forEach((fullKey, index) => {
+      const value = values[index];
       if (value) {
-        // 截取 source+id 部分
         const keyPart = ensureString(fullKey.replace(`u:${userName}:pr:`, ''));
         result[keyPart] = value as PlayRecord;
       }
-    }
+    });
     return result;
   }
 
@@ -133,14 +215,15 @@ export class UpstashRedisStorage implements IStorage {
     const keys: string[] = await withRetry(() => this.client.keys(pattern));
     if (keys.length === 0) return {};
 
+    const values = await withRetry(() => this.client.mget(keys));
     const result: Record<string, Favorite> = {};
-    for (const fullKey of keys) {
-      const value = await withRetry(() => this.client.get(fullKey));
+    keys.forEach((fullKey, index) => {
+      const value = values[index];
       if (value) {
         const keyPart = ensureString(fullKey.replace(`u:${userName}:fav:`, ''));
         result[keyPart] = value as Favorite;
       }
-    }
+    });
     return result;
   }
 
@@ -154,17 +237,28 @@ export class UpstashRedisStorage implements IStorage {
   }
 
   async registerUser(userName: string, password: string): Promise<void> {
-    // 简单存储明文密码，生产环境应加密
-    await withRetry(() => this.client.set(this.userPwdKey(userName), password));
+    const encoded = await encodePassword(password);
+    await withRetry(() => this.client.set(this.userPwdKey(userName), encoded));
   }
 
   async verifyUser(userName: string, password: string): Promise<boolean> {
-    const stored = await withRetry(() =>
-      this.client.get(this.userPwdKey(userName))
-    );
+    const passwordKey = this.userPwdKey(userName);
+    const stored = await withRetry(() => this.client.get(passwordKey));
     if (stored === null) return false;
-    // 确保比较时都是字符串类型
-    return ensureString(stored) === password;
+
+    const storedPassword = ensureString(stored);
+    if (storedPassword.startsWith(`${PASSWORD_HASH_PREFIX}$`)) {
+      return verifyEncodedPassword(password, storedPassword);
+    }
+
+    // Backward compatibility: existing accounts may still contain plaintext.
+    // A successful legacy login upgrades the stored value immediately.
+    const legacyMatches = storedPassword === password;
+    if (legacyMatches) {
+      const encoded = await encodePassword(password);
+      await withRetry(() => this.client.set(passwordKey, encoded));
+    }
+    return legacyMatches;
   }
 
   // 检查用户是否存在
@@ -178,9 +272,9 @@ export class UpstashRedisStorage implements IStorage {
 
   // 修改用户密码
   async changePassword(userName: string, newPassword: string): Promise<void> {
-    // 简单存储明文密码，生产环境应加密
+    const encoded = await encodePassword(newPassword);
     await withRetry(() =>
-      this.client.set(this.userPwdKey(userName), newPassword)
+      this.client.set(this.userPwdKey(userName), encoded)
     );
   }
 

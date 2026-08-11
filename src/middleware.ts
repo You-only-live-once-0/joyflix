@@ -56,23 +56,33 @@ export async function middleware(request: NextRequest) {
   return handleAuthFailure(request, pathname);
 }
 
+let cachedVerificationSecret = '';
+let cachedVerificationKey: CryptoKey | null = null;
+
+async function getVerificationKey(secret: string): Promise<CryptoKey> {
+  if (cachedVerificationKey && cachedVerificationSecret === secret) {
+    return cachedVerificationKey;
+  }
+  cachedVerificationKey = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  cachedVerificationSecret = secret;
+  return cachedVerificationKey;
+}
+
 async function verifySignature(
   data: string,
   signature: string,
   secret: string
 ): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
+  const messageData = new TextEncoder().encode(data);
 
   try {
-    const key = await crypto.subtle.importKey(
-      'raw',
-      keyData,
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
+    const key = await getVerificationKey(secret);
 
     const signatureBuffer = new Uint8Array(
       signature.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []

@@ -12,18 +12,20 @@ const SEARCH_CONCURRENCY = 10;
 
 async function searchWithConcurrency(
   sites: Awaited<ReturnType<typeof getConfig>>['SourceConfig'],
-  query: string
+  query: string,
+  signal?: AbortSignal
 ): Promise<SearchResult[]> {
   const buckets: SearchResult[][] = new Array(sites.length);
   let nextIndex = 0;
 
   const worker = async () => {
     while (true) {
+      if (signal?.aborted) return;
       const index = nextIndex++;
       if (index >= sites.length) return;
       const site = sites[index];
       try {
-        buckets[index] = await searchFromApi(site, query);
+        buckets[index] = await searchFromApi(site, query, signal);
       } catch (error) {
         console.warn(
           `搜索失败 ${site.name}:`,
@@ -76,7 +78,11 @@ export async function GET(request: Request) {
   try {
     // 下游请求自身已有 AbortController 超时；这里用滚动并发池限制瞬时连接数，
     // 避免片源增加后一次搜索同时打几十个远端接口。
-    const flattenedResults = await searchWithConcurrency(apiSites, query);
+    const flattenedResults = await searchWithConcurrency(
+      apiSites,
+      query,
+      request.signal
+    );
     const cacheTime = await getCacheTime();
 
     return NextResponse.json(

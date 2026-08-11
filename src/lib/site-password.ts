@@ -64,5 +64,11 @@ export async function verifySitePassword(password: string): Promise<boolean> {
 }
 
 export function getAuthSigningSecret(): string {
-  return process.env.PASSWORD || FALLBACK_PASSWORD_HASH;
+  return (
+    process.env.AUTH_SECRET ||
+    process.env.PASSWORD ||
+    process.env.UPSTASH_TOKEN ||
+    process.env.KV_REST_API_TOKEN ||
+    FALLBACK_PASSWORD_HASH
+  );
 }

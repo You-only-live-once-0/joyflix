@@ -47,6 +47,8 @@ export const API_CONFIG = {
 // 在模块加载时根据环境决定配置来源
 let fileConfig: ConfigFileStruct;
 let cachedConfig: AdminConfig;
+let cachedConfigExpiresAt = 0;
+const CONFIG_CACHE_TTL_MS = 30_000;
 
 async function initConfig() {
   if (cachedConfig) {
@@ -256,6 +258,14 @@ export async function getConfig(): Promise<AdminConfig> {
     await initConfig();
     return cachedConfig;
   }
+
+  // Serverless/Edge warm instances used to re-read admin:config for every API
+  // request. A short TTL removes that extra Redis round trip while keeping admin
+  // changes visible quickly across instances.
+  if (cachedConfig && Date.now() < cachedConfigExpiresAt) {
+    return cachedConfig;
+  }
+
   // 非 docker 环境且 DB 存储，直接读 db 配置
   const storage = getStorage();
   let adminConfig: AdminConfig | null = null;
@@ -357,6 +367,9 @@ export async function getConfig(): Promise<AdminConfig> {
     // DB 无配置，执行一次初始化
     await initConfig();
   }
+  if (cachedConfig) {
+    cachedConfigExpiresAt = Date.now() + CONFIG_CACHE_TTL_MS;
+  }
   return cachedConfig;
 }
 
@@ -449,6 +462,7 @@ export async function resetConfig() {
   cachedConfig.UserConfig = adminConfig.UserConfig;
   cachedConfig.SourceConfig = adminConfig.SourceConfig;
   cachedConfig.CustomCategories = adminConfig.CustomCategories;
+  cachedConfigExpiresAt = Date.now() + CONFIG_CACHE_TTL_MS;
 }
 
 export async function getCacheTime(): Promise<number> {
