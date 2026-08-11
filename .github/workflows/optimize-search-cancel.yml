@@ -1,0 +1,63 @@
+name: Optimize search cancellation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/optimize-search-cancel.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Patch search page
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('src/app/search/page.tsx')
+          s = p.read_text()
+          reps = [
+            ("import React, { Suspense, useEffect, useMemo, useState } from 'react';", "import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';"),
+            ("  const [isRecommendationsLoading, setIsRecommendationsLoading] = useState(true);", "  const [isRecommendationsLoading, setIsRecommendationsLoading] = useState(true);\n  const activeSearchControllerRef = useRef<AbortController | null>(null);\n  const searchRequestIdRef = useRef(0);"),
+            ("    } else {\n      setShowResults(false);\n      setShowSuggestions(false);\n    }", "    } else {\n      searchRequestIdRef.current += 1;\n      activeSearchControllerRef.current?.abort();\n      activeSearchControllerRef.current = null;\n      setShowResults(false);\n      setShowSuggestions(false);\n    }"),
+            ("  const fetchSearchResults = async (query: string) => {\n    try {\n      // 立即设置加载和显示状态，清空旧结果\n      setIsLoading(true);", "  const fetchSearchResults = async (query: string) => {\n    const requestId = ++searchRequestIdRef.current;\n    activeSearchControllerRef.current?.abort();\n    const controller = new AbortController();\n    activeSearchControllerRef.current = controller;\n\n    try {\n      // 立即设置加载和显示状态，清空旧结果\n      setIsLoading(true);"),
+            ("      const response = await fetch(\n        `/api/searchstream?q=${encodeURIComponent(query.trim())}`\n      );", "      const response = await fetch(\n        `/api/searchstream?q=${encodeURIComponent(query.trim())}`,\n        { signal: controller.signal }\n      );"),
+            ("        for (const line of lines) {\n          if (line.trim() === '') continue;", "        if (requestId !== searchRequestIdRef.current) {\n          await reader.cancel();\n          return;\n        }\n\n        for (const line of lines) {\n          if (line.trim() === '') continue;"),
+            ("              setSearchResults((prevResults) => [\n                ...prevResults,\n                ...filteredResults,\n              ]);", "              setSearchResults((prevResults) => {\n                const existing = new Set(\n                  prevResults.map((item) => `${item.source}:${item.id}`)\n                );\n                const uniqueNew = filteredResults.filter((item) => {\n                  const key = `${item.source}:${item.id}`;\n                  if (existing.has(key)) return false;\n                  existing.add(key);\n                  return true;\n                });\n                return [...prevResults, ...uniqueNew];\n              });"),
+            ("    } catch (error) {\n      console.error('Search failed:', error);\n      setSearchResults([]);\n    } finally {\n      // 确保在流程最后（如无结果时）骨架屏和流状态也能被关闭\n      setIsLoading(false);\n      setIsStreaming(false);\n    }", "    } catch (error) {\n      if (error instanceof DOMException && error.name === 'AbortError') return;\n      if (requestId === searchRequestIdRef.current) {\n        console.error('Search failed:', error);\n        setSearchResults([]);\n      }\n    } finally {\n      // 旧请求结束时不能关闭新请求的加载状态。\n      if (requestId === searchRequestIdRef.current) {\n        setIsLoading(false);\n        setIsStreaming(false);\n        activeSearchControllerRef.current = null;\n      }\n    }"),
+          ]
+          for old,new in reps:
+              n=s.count(old)
+              if n != 1:
+                  raise SystemExit(f'Expected one match, got {n}: {old[:100]!r}')
+              s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+
+      - name: Validate
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm gen:runtime
+          pnpm exec tsc --noEmit
+          pnpm run build
+
+      - name: Cleanup and commit
+        run: |
+          rm .github/workflows/optimize-search-cancel.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/app/search/page.tsx .github/workflows/optimize-search-cancel.yml
+          git commit -m 'perf: cancel stale streaming searches'
+          git push
