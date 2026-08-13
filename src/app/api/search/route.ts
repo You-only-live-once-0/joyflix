@@ -10,6 +10,12 @@ export const runtime = 'nodejs';
 
 const SEARCH_CONCURRENCY = 10;
 
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, max-age=0',
+  'CDN-Cache-Control': 'no-store',
+  'Vercel-CDN-Cache-Control': 'no-store',
+};
+
 async function searchWithConcurrency(
   sites: Awaited<ReturnType<typeof getConfig>>['SourceConfig'],
   query: string,
@@ -83,6 +89,18 @@ export async function GET(request: Request) {
       query,
       request.signal
     );
+
+    // 搜索依赖多个第三方片源。某一时刻全部片源超时/异常时，空结果通常只是
+    // 暂时性故障。之前会把这种空结果按站点缓存时间（默认 2 小时）缓存到 CDN，
+    // 导致用户反复刷新仍看到“未找到匹配结果”。空结果必须禁止缓存，让下一次
+    // 请求真正重新访问下游片源。
+    if (flattenedResults.length === 0) {
+      return NextResponse.json(
+        { results: [] },
+        { headers: NO_STORE_HEADERS }
+      );
+    }
+
     const cacheTime = await getCacheTime();
 
     return NextResponse.json(
@@ -97,6 +115,9 @@ export async function GET(request: Request) {
       }
     );
   } catch {
-    return NextResponse.json({ error: '搜索失败' }, { status: 500 });
+    return NextResponse.json(
+      { error: '搜索失败' },
+      { status: 500, headers: NO_STORE_HEADERS }
+    );
   }
 }

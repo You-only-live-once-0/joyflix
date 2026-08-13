@@ -378,16 +378,18 @@ function DetailPageClient() {
     if (!detail) return;
 
     const playParams = new URLSearchParams();
-    const hasOriginalSource = searchParams.get('source');
 
-    if (hasOriginalSource) {
+    // 详情页即使最初只有 title/year，也可能已经通过流式搜索解析出了
+    // 可用的 source/id。优先把解析结果带到播放页，避免播放页再次全源搜索，
+    // 从而减少第三方片源瞬时超时导致的“未找到匹配结果”。
+    if (detail.source && detail.id) {
       playParams.set('source', detail.source);
       playParams.set('id', detail.id);
       playParams.set('title', detail.title);
       if (detail.year) {
         playParams.set('year', detail.year);
       }
-      
+
       const stitle = searchParams.get('stitle');
       if (stitle) {
         playParams.set('stitle', stitle);
