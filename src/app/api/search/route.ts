@@ -16,6 +16,26 @@ const NO_STORE_HEADERS = {
   'Vercel-CDN-Cache-Control': 'no-store',
 };
 
+function normalizeTitle(value: string | undefined): string {
+  return (value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[·・:：!！?？,，。．、\-—_()（）\[\]【】《》<>~～'"“”‘’]/g, '');
+}
+
+function getRequestedYear(request: Request, searchParams: URLSearchParams) {
+  const direct = searchParams.get('year')?.trim();
+  if (direct) return direct;
+  const referer = request.headers.get('referer');
+  if (!referer) return '';
+  try {
+    return new URL(referer).searchParams.get('year')?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
 async function searchWithConcurrency(
   sites: Awaited<ReturnType<typeof getConfig>>['SourceConfig'],
   query: string,
@@ -82,18 +102,12 @@ export async function GET(request: Request) {
   );
 
   try {
-    // 下游请求自身已有 AbortController 超时；这里用滚动并发池限制瞬时连接数，
-    // 避免片源增加后一次搜索同时打几十个远端接口。
     const flattenedResults = await searchWithConcurrency(
       apiSites,
       query,
       request.signal
     );
 
-    // 搜索依赖多个第三方片源。某一时刻全部片源超时/异常时，空结果通常只是
-    // 暂时性故障。之前会把这种空结果按站点缓存时间（默认 2 小时）缓存到 CDN，
-    // 导致用户反复刷新仍看到“未找到匹配结果”。空结果必须禁止缓存，让下一次
-    // 请求真正重新访问下游片源。
     if (flattenedResults.length === 0) {
       return NextResponse.json(
         { results: [] },
@@ -101,10 +115,45 @@ export async function GET(request: Request) {
       );
     }
 
+    const requestedYear = getRequestedYear(request, searchParams);
+    const normalizedQuery = normalizeTitle(query);
+    const strictMatchExists = flattenedResults.some(
+      (result) =>
+        normalizeTitle(result.title) === normalizedQuery &&
+        (!requestedYear || result.year === requestedYear)
+    );
+
+    let responseResults = flattenedResults;
+    let compatibilityFallback = false;
+
+    if (!strictMatchExists) {
+      const sameTitleResults = flattenedResults.filter(
+        (result) => normalizeTitle(result.title) === normalizedQuery
+      );
+      if (sameTitleResults.length > 0) {
+        responseResults = [
+          ...sameTitleResults.map((result) => ({
+            ...result,
+            title: query,
+            year: requestedYear || result.year,
+          })),
+          ...flattenedResults,
+        ];
+        compatibilityFallback = true;
+      }
+    }
+
+    if (compatibilityFallback) {
+      return NextResponse.json(
+        { results: responseResults },
+        { headers: NO_STORE_HEADERS }
+      );
+    }
+
     const cacheTime = await getCacheTime();
 
     return NextResponse.json(
-      { results: flattenedResults },
+      { results: responseResults },
       {
         headers: {
           'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
