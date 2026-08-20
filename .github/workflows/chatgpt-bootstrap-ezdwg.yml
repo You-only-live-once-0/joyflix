@@ -1,0 +1,42 @@
+name: ChatGPT bootstrap ezdwg
+
+on:
+  push:
+    branches:
+      - chatgpt-ezdwg-bootstrap-20260820
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt-ezdwg-bootstrap-20260820
+      - name: Build text bootstrap chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f bootstrap/complete ]; then
+            echo "Already bootstrapped"
+            exit 0
+          fi
+          rm -rf /tmp/ezdwg-wheel bootstrap
+          mkdir -p /tmp/ezdwg-wheel bootstrap
+          python3 -m pip download --no-deps ezdwg==0.12.4 -d /tmp
+          WHL="$(ls /tmp/ezdwg-0.12.4-*.whl | head -1)"
+          python3 -m zipfile -e "$WHL" /tmp/ezdwg-wheel
+          tar -C /tmp/ezdwg-wheel -cJf /tmp/ezdwg-wheel.tar.xz .
+          base64 -w 76 /tmp/ezdwg-wheel.tar.xz > /tmp/ezdwg-wheel.b64
+          split -l 1500 -d -a 3 /tmp/ezdwg-wheel.b64 bootstrap/chunk_
+          sha256sum /tmp/ezdwg-wheel.tar.xz | awk '{print $1}' > bootstrap/sha256.txt
+          stat -c%s /tmp/ezdwg-wheel.tar.xz > bootstrap/size.txt
+          touch bootstrap/complete
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bootstrap
+          git commit -m "chore: temporary ezdwg bootstrap chunks"
+          git push origin HEAD:chatgpt-ezdwg-bootstrap-20260820
