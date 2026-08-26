@@ -27,7 +27,9 @@ jobs:
           cache: pnpm
 
       - name: Apply patches
-        run: python3 scripts/optimize_critical_paths.py
+        run: |
+          python3 scripts/optimize_critical_paths.py
+          python3 scripts/fix_critical_type.py
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -45,6 +47,7 @@ jobs:
         shell: bash
         run: |
           rm scripts/optimize_critical_paths.py
+          rm scripts/fix_critical_type.py
           rm .github/workflows/optimize-critical-paths.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
